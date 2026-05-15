@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-public enum ImageCropShape {
+public enum ImageCropShape: Sendable {
     case circle
     case square
 }

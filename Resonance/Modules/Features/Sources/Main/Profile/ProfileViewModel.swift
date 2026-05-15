@@ -27,7 +27,12 @@ final class ProfileViewModel {
         case questionDeleted(authorNick: String)
         case bestAnswerChanged(questionId: Int, answerId: Int, isBest: Bool)
         case addressedQuestionPublished
-        case profileSettingsUpdated(userNick: String, avatarData: Data?)
+        case profileSettingsUpdated(
+            userNick: String,
+            newNick: String?,
+            avatarData: Data?,
+            avatarWasUpdated: Bool
+        )
         case toggleSubscription
         case dismissToast
     }
@@ -50,6 +55,10 @@ final class ProfileViewModel {
         nick == currentUser.nick
     }
 
+    var activeToast: ToastItem? {
+        toast ?? selectedSectionToast
+    }
+
     private(set) var state: State = .idle
     private(set) var toast: ToastItem?
     private(set) var profile: UserProfile?
@@ -61,8 +70,8 @@ final class ProfileViewModel {
 
     private var lastProfileLoadedAt: Date?
 
-    private let nick: String
-    private let currentUser: CurrentUser
+    private var nick: String
+    private var currentUser: CurrentUserInfo
     private let userService: UserService
     private let onSettingsButtonTap: (() -> Void)?
     private let onAuthorTap: ((String) -> Void)?
@@ -90,7 +99,7 @@ final class ProfileViewModel {
 
     init(
         nick: String,
-        currentUser: CurrentUser,
+        currentUser: CurrentUserInfo,
         userService: UserService = UserService(),
         onSettingsButtonTap: (() -> Void)?,
         onAuthorTap: ((String) -> Void)?,
@@ -185,16 +194,26 @@ final class ProfileViewModel {
                 kind: .success,
                 position: .bottom
             )
-        case .profileSettingsUpdated(let userNick, let avatarData):
-            guard userNick == nick, let profile else { return }
-            self.profile = makeProfile(
-                from: profile,
-                avatarData: avatarData
+        case .profileSettingsUpdated(
+            let userNick,
+            let newNick,
+            let avatarData,
+            let avatarWasUpdated
+        ):
+            handleProfileSettingsUpdated(
+                userNick: userNick,
+                newNick: newNick,
+                avatarData: avatarData,
+                avatarWasUpdated: avatarWasUpdated
             )
         case .toggleSubscription:
             Task { await toggleSubscription() }
         case .dismissToast:
-            toast = nil
+            if toast != nil {
+                toast = nil
+            } else {
+                dismissSelectedSectionToast()
+            }
         }
     }
 
@@ -214,6 +233,10 @@ final class ProfileViewModel {
         guard !isLoading, force || shouldUpdateData else { return }
 
         state = isRefreshing ? .refreshingProfile : .loadingProfile
+
+        if isRefreshing {
+            try? await Task.sleep(nanoseconds: 0_500_000_000)
+        }
 
         let result = await userService.getUserProfile(nick: nick)
 
@@ -235,9 +258,9 @@ final class ProfileViewModel {
     private func refreshSection(_ section: Section) async {
         switch section {
         case .posts:
-            await postsSectionViewModel.refreshFeed()
+            postsSectionViewModel.handle(.refreshFeed)
         case .questions:
-            await questionsSectionViewModel.refreshFeed()
+            questionsSectionViewModel.handle(.refreshFeed)
         case .answers:
             await answersSectionViewModel.refreshFeed()
         }
@@ -246,14 +269,14 @@ final class ProfileViewModel {
     private func invalidateSections(except section: Section) {
         switch section {
         case .posts:
-            questionsSectionViewModel.invalidateFeed()
+            questionsSectionViewModel.handle(.invalidateFeed)
             answersSectionViewModel.invalidateFeed()
         case .questions:
-            postsSectionViewModel.invalidateFeed()
+            postsSectionViewModel.handle(.invalidateFeed)
             answersSectionViewModel.invalidateFeed()
         case .answers:
-            postsSectionViewModel.invalidateFeed()
-            questionsSectionViewModel.invalidateFeed()
+            postsSectionViewModel.handle(.invalidateFeed)
+            questionsSectionViewModel.handle(.invalidateFeed)
         }
     }
 
@@ -332,7 +355,82 @@ final class ProfileViewModel {
         )
     }
 
+    private func makeProfile(
+        from profile: UserProfile,
+        nick: String
+    ) -> UserProfile {
+        UserProfile(
+            id: profile.id,
+            email: profile.email,
+            nick: nick,
+            avatarData: profile.avatarData,
+            isSubscribedByCurrentUser: profile.isSubscribedByCurrentUser,
+            postsCount: profile.postsCount,
+            subscribersCount: profile.subscribersCount,
+            subscriptionsCount: profile.subscriptionsCount
+        )
+    }
+
+    private func handleProfileSettingsUpdated(
+        userNick: String,
+        newNick: String?,
+        avatarData: Data?,
+        avatarWasUpdated: Bool
+    ) {
+        guard userNick == nick else { return }
+
+        if let newNick {
+            updateCurrentUserNick(newNick)
+            updateProfileNick(newNick)
+            postsSectionViewModel.handle(.userNickChanged(newNick))
+            questionsSectionViewModel.handle(.userNickChanged(newNick))
+            answersSectionViewModel.handle(.userNickChanged(newNick))
+        }
+
+        if avatarWasUpdated, let profile {
+            self.profile = makeProfile(
+                from: profile,
+                avatarData: avatarData
+            )
+        }
+    }
+
+    private func updateCurrentUserNick(_ userNick: String) {
+        nick = userNick
+        currentUser = CurrentUserInfo(
+            id: currentUser.id,
+            nick: userNick,
+            email: currentUser.email,
+            deviceId: currentUser.deviceId,
+            deviceToken: currentUser.deviceToken
+        )
+        lastProfileLoadedAt = nil
+    }
+
+    private func updateProfileNick(_ nick: String) {
+        guard let profile else { return }
+        self.profile = makeProfile(from: profile, nick: nick)
+    }
+
     private func showToast(_ message: ToastMessage) {
         toast = message.item
+    }
+
+    private var selectedSectionToast: ToastItem? {
+        switch selectedSection {
+        case .posts, .answers:
+            return nil
+        case .questions:
+            return questionsSectionViewModel.toast
+        }
+    }
+
+    private func dismissSelectedSectionToast() {
+        switch selectedSection {
+        case .posts, .answers:
+            break
+        case .questions:
+            questionsSectionViewModel.handle(.dismissToast)
+        }
     }
 }

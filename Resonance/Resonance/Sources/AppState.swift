@@ -1,5 +1,6 @@
 import SwiftUI
 import Core
+import Features
 
 @MainActor
 @Observable
@@ -14,8 +15,8 @@ final class AppState {
 
     // MARK: - Properties
 
-    var root: Root = .auth
-    private(set) var userStore: UserStore?
+    private(set) var root: Root = .auth
+    private(set) var currentUserInfoStore: CurrentUserInfoStore?
 
     private let tokenManager = TokenManager.shared
 
@@ -32,22 +33,29 @@ final class AppState {
     }
 
     func logout() {
-        userStore?.logout()
-        userStore = nil
+        clearDataBeforeLogout()
         root = .auth
     }
 
     // MARK: - Private Methods
 
     private func checkAuthStatus() {
-        guard tokenManager.isAuthenticated, let userStore = UserStore() else {
-            UserStore.logout()
-            self.userStore = nil
+        guard tokenManager.isAuthenticated,
+              let currentUserInfoStore = CurrentUserInfoStore()
+        else {
+            clearDataBeforeLogout()
             root = .auth
             return
         }
-
-        self.userStore = userStore
+        
+        self.currentUserInfoStore = currentUserInfoStore
         root = .main
+    }
+
+    private func clearDataBeforeLogout() {
+        NotificationsManager.shared.updateBadgeCount(with: 0)
+        CurrentUserInfoStore.clearInfo()
+        currentUserInfoStore = nil
+        tokenManager.clearTokens()
     }
 }

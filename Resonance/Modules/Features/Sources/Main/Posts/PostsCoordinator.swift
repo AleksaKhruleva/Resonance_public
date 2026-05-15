@@ -8,7 +8,7 @@ struct PostsCoordinator: View {
         case notifications(NotificationsCoordinator.Route)
     }
 
-    @Environment(UserStore.self) private var userStore
+    @Environment(CurrentUserInfoStore.self) private var currentUserInfoStore
     @State private var path = NavigationPath()
     @Binding private var refreshTrigger: Int
     private let onLogout: () -> Void
@@ -24,7 +24,7 @@ struct PostsCoordinator: View {
     var body: some View {
         NavigationStack(path: $path) {
             PostsFeedView(
-                currentUser: userStore.currentUser,
+                currentUser: currentUserInfoStore.currentUserInfo,
                 refreshTrigger: $refreshTrigger
             ) { authorNick in
                 path.append(

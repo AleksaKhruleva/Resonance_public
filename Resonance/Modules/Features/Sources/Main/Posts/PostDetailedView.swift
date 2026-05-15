@@ -5,29 +5,20 @@ import UIComponents
 struct PostDetailedView: View {
 
     @Environment(\.dismiss) private var dismiss
+
     @State private var viewModel: PostDetailedViewModel
     @State private var reportTarget: ReportTarget?
-    @State private var reportToast: ToastItem?
-    private let onPostDeleted: ((Post) -> Void)?
 
-    init(
-        post: Post,
-        onPostDeleted: ((Post) -> Void)? = nil
-    ) {
-        self.onPostDeleted = onPostDeleted
+    init(post: Post) {
         _viewModel = State(
             initialValue: PostDetailedViewModel(post: post)
         )
     }
 
-    private var activeToast: ToastItem? {
-        reportToast ?? viewModel.toast
-    }
-
     var body: some View {
         ZStack {
             AppBackgroundView()
-            List {
+            ScrollView {
                 PostView(
                     post: viewModel.post,
                     shouldDisableLikeButton: viewModel.isLikeLoading,
@@ -43,29 +34,25 @@ struct PostDetailedView: View {
                     }
                 )
                 .padding(.top, 4)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 24, trailing: 0))
+                .padding(.bottom, 24)
             }
-            .listStyle(.plain)
             .scrollIndicators(.never)
-            .scrollContentBackground(.hidden)
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbarTitle("Пост")
         .toolbar(.hidden, for: .tabBar)
         .loading(viewModel.state == .deleting)
         .toast(
-            activeToast,
+            viewModel.toast,
             onTap: {
-                dismissActiveToast()
+                viewModel.handle(.dismissToast)
             }
         )
         .sheet(item: $reportTarget) { target in
             ReportReasonSheetView(
                 target: target,
                 onSent: {
-                    reportToast = ToastMessage.reportSent.item
+                    viewModel.handle(.reportSent)
                 }
             )
         }
@@ -90,40 +77,7 @@ struct PostDetailedView: View {
         }
         .onChange(of: viewModel.shouldDismiss) { _, shouldDismiss in
             guard shouldDismiss else { return }
-            onPostDeleted?(viewModel.post)
-            NotificationCenter.default.post(
-                name: .profilePostDeleted,
-                object: nil,
-                userInfo: [
-                    ProfilePostDeletionNotification.authorNickKey: viewModel.post.authorNick
-                ]
-            )
             dismiss()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .postLikeChanged)) { notification in
-            guard
-                let postId = notification.userInfo?[PostLikeNotification.postIdKey] as? Int,
-                let isLiked = notification.userInfo?[PostLikeNotification.isLikedKey] as? Bool,
-                let likesCount = notification.userInfo?[PostLikeNotification.likesCountKey] as? Int
-            else {
-                return
-            }
-
-            viewModel.handle(
-                .postLikeChanged(
-                    postId: postId,
-                    isLiked: isLiked,
-                    likesCount: likesCount
-                )
-            )
-        }
-    }
-
-    private func dismissActiveToast() {
-        if reportToast != nil {
-            reportToast = nil
-        } else {
-            viewModel.handle(.dismissToast)
         }
     }
 }

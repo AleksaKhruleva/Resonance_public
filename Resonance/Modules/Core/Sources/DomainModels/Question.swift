@@ -1,7 +1,7 @@
 import Foundation
 
 public struct Question: Identifiable, Hashable {
-
+    
     public let id: Int
     public let publishDate: String
     public let isOwnedByCurrentUser: Bool
@@ -14,7 +14,7 @@ public struct Question: Identifiable, Hashable {
     public let audio: Audio?
     public var answersCount: Int
     public var answers: [Answer]
-
+    
     public init(
         id: Int,
         publishDate: String,

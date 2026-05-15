@@ -14,7 +14,7 @@ struct PostsFeedView: View {
     }
 
     init(
-        currentUser: CurrentUser,
+        currentUser: CurrentUserInfo,
         refreshTrigger: Binding<Int> = .constant(0),
         onAuthorTap: ((String) -> Void)?,
         onNotificationsTap: (() -> Void)? = nil

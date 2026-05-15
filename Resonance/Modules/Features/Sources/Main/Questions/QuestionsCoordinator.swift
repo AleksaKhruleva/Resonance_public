@@ -7,23 +7,28 @@ struct QuestionsCoordinator: View {
     private enum Route: Hashable {
         case profile(ProfileCoordinator.Route)
         case notifications(NotificationsCoordinator.Route)
-        case questionDetails(Question)
+        case questionDetails(questionId: Int)
     }
 
-    private let hasUnreadNotifications = true
-
-    @State private var path = NavigationPath()
-    @Binding private var refreshTrigger: Int
-    @Binding private var refreshFilter: QuestionsFeedViewModel.FeedFilter?
     private let onLogout: () -> Void
 
+    @Environment(AppRouteStore.self) private var appRouteStore
+
+    @Binding private var refreshTrigger: Int
+    @Binding private var refreshFilter: FeedFilter?
+    @Binding private var deepLinkRoute: QuestionsDeepLinkRoute?
+
+    @State private var path = NavigationPath()
+
     init(
-        refreshTrigger: Binding<Int> = .constant(0),
-        refreshFilter: Binding<QuestionsFeedViewModel.FeedFilter?> = .constant(nil),
+        refreshTrigger: Binding<Int>,
+        refreshFilter: Binding<FeedFilter?>,
+        deepLinkRoute: Binding<QuestionsDeepLinkRoute?> = .constant(nil),
         onLogout: @escaping () -> Void = {}
     ) {
         _refreshTrigger = refreshTrigger
         _refreshFilter = refreshFilter
+        _deepLinkRoute = deepLinkRoute
         self.onLogout = onLogout
     }
 
@@ -36,7 +41,7 @@ struct QuestionsCoordinator: View {
                     path.append(Route.profile(.profile(userNick: authorNick)))
                 },
                 onQuestionTap: { question in
-                    path.append(Route.questionDetails(question))
+                    path.append(Route.questionDetails(questionId: question.id))
                 },
                 onNotificationsTap: {
                     path.append(Route.notifications(.notifications))
@@ -59,15 +64,35 @@ struct QuestionsCoordinator: View {
                             path.append(Route.notifications(nextRoute))
                         }
                     )
-                case .questionDetails(let question):
+                case .questionDetails(let questionId):
                     QuestionDetailedView(
-                        questionId: question.id,
+                        questionId: questionId,
                         onAuthorTap: { authorNick in
                             path.append(Route.profile(.profile(userNick: authorNick)))
                         }
                     )
                 }
             }
+            .onAppear {
+                handleDeepLinkRoute(deepLinkRoute)
+            }
+            .onChange(of: deepLinkRoute) { _, route in
+                handleDeepLinkRoute(route)
+            }
         }
+    }
+
+    private func handleDeepLinkRoute(_ route: QuestionsDeepLinkRoute?) {
+        guard let route else { return }
+
+        path = NavigationPath()
+        switch route {
+        case .profile(let userNick):
+            path.append(Route.profile(.profile(userNick: userNick)))
+        case .questionDetails(let questionId):
+            path.append(Route.questionDetails(questionId: questionId))
+        }
+        deepLinkRoute = nil
+        appRouteStore.clear()
     }
 }

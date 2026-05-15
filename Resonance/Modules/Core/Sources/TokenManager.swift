@@ -3,10 +3,10 @@ import Foundation
 @MainActor
 @Observable
 public final class TokenManager {
-    
-    public static let shared = TokenManager()
 
-    // MARK: - Public Properties
+    // MARK: - Properties
+
+    public static let shared = TokenManager()
 
     public private(set) var accessToken: String?
     public private(set) var refreshToken: String?

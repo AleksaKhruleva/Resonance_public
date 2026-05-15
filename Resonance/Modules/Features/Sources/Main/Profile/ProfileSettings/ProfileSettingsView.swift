@@ -18,13 +18,15 @@ struct ProfileSettingsView: View {
         let image: UIImage
     }
 
+    @Environment(CurrentUserInfoStore.self) private var currentUserInfoStore
+
     @State private var viewModel: ProfileSettingsViewModel
-    @State private var isPhotoPickerPresented = false
     @State private var selectedAvatarItem: PhotosPickerItem?
     @State private var cropperPayload: CropperPayload?
-
     @State private var activeAlert: ProfileSettingsAlert?
-    private let onLogout: () -> Void
+    @State private var isPhotoPickerPresented = false
+    @State private var isChangeNickViewPresented = false
+    @State private var isChangeEmailViewPresented = false
 
     private var isAlertPresented: Binding<Bool> {
         Binding(
@@ -38,12 +40,14 @@ struct ProfileSettingsView: View {
     }
 
     init(
-        currentUser: CurrentUser,
+        currentUser: CurrentUserInfo,
         onLogout: @escaping () -> Void = {}
     ) {
-        self.onLogout = onLogout
         _viewModel = State(
-            initialValue: ProfileSettingsViewModel(currentUser: currentUser)
+            initialValue: ProfileSettingsViewModel(
+                currentUser: currentUser,
+                onLogout: onLogout
+            )
         )
     }
 
@@ -100,8 +104,37 @@ struct ProfileSettingsView: View {
                 }
             )
         }
+        .fullScreenCover(isPresented: $isChangeNickViewPresented, content: {
+            ChangeNickView(
+                currentNick: viewModel.nick,
+                currentUserInfoStore: currentUserInfoStore
+            )
+        })
+        .fullScreenCover(isPresented: $isChangeEmailViewPresented, content: {
+            ChangeEmailView(currentEmail: viewModel.email)
+        })
         .onAppear {
             viewModel.handle(.loadProfile)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .profileSettingsUpdated)) { notification in
+            guard
+                let userNick = notification.userInfo?[ProfileSettingsUpdateNotification.userNickKey] as? String
+            else {
+                return
+            }
+
+            let newNick = notification.userInfo?[ProfileSettingsUpdateNotification.newUserNickKey] as? String
+            let avatarData = notification.userInfo?[ProfileSettingsUpdateNotification.avatarDataKey] as? Data
+            let avatarWasUpdated = notification.userInfo?[ProfileSettingsUpdateNotification.avatarWasUpdatedKey] as? Bool ?? false
+
+            viewModel.handle(
+                .profileSettingsUpdated(
+                    userNick: userNick,
+                    newNick: newNick,
+                    avatarData: avatarData,
+                    avatarWasUpdated: avatarWasUpdated
+                )
+            )
         }
     }
 
@@ -121,7 +154,8 @@ struct ProfileSettingsView: View {
                 iconName: "camera",
                 title: viewModel.hasAvatar ? "Изменить аватар" : "Установить аватар"
             ) {
-                handleAction(.changeAvatar)
+                guard viewModel.isAvatarActionAvailable else { return }
+                activeAlert = .editAvatar(hasAvatar: viewModel.hasAvatar)
             }
 
             SettingsDivider()
@@ -130,7 +164,7 @@ struct ProfileSettingsView: View {
                 iconName: "person.text.rectangle",
                 title: "Изменить ник"
             ) {
-                handleAction(.changeNick)
+                isChangeNickViewPresented = true
             }
 
             SettingsDivider()
@@ -139,7 +173,7 @@ struct ProfileSettingsView: View {
                 iconName: "at",
                 title: "Изменить почту"
             ) {
-                handleAction(.changeEmail)
+                isChangeEmailViewPresented = true
             }
         }
     }
@@ -151,7 +185,7 @@ struct ProfileSettingsView: View {
                 iconName: "rectangle.portrait.and.arrow.right",
                 title: "Выйти из аккаунта"
             ) {
-                handleAction(.logout)
+                activeAlert = .logout
             }
 
             SettingsDivider()
@@ -161,9 +195,13 @@ struct ProfileSettingsView: View {
                 iconName: "trash",
                 title: "Удалить аккаунт"
             ) {
-                handleAction(.deleteAccount)
+                activeAlert = .deleteAccount
             }
         }
+    }
+
+    private func makeAlertMessage(for alert: ProfileSettingsAlert) -> some View {
+        Text(alert.message)
     }
 
     @ViewBuilder
@@ -172,13 +210,15 @@ struct ProfileSettingsView: View {
         case .logout:
             Button("Отмена", role: .cancel) {}
             Button("Выйти", role: .destructive) {
-                performConfirmedAction(.logout)
+                activeAlert = nil
+                viewModel.handle(.logout)
             }
 
         case .deleteAccount:
             Button("Отмена", role: .cancel) {}
             Button("Удалить", role: .destructive) {
-                performConfirmedAction(.deleteAccount)
+                activeAlert = nil
+                viewModel.handle(.deleteAccount)
             }
 
         case .editAvatar(let hasAvatar):
@@ -195,42 +235,6 @@ struct ProfileSettingsView: View {
             }
 
             Button("Ничего не менять", role: .cancel) {}
-        }
-    }
-
-    private func makeAlertMessage(for alert: ProfileSettingsAlert) -> some View {
-        Text(alert.message)
-    }
-
-    private func handleAction(_ action: ProfileSettingsAction) {
-        switch action {
-        case .changeAvatar:
-            guard viewModel.isAvatarActionAvailable else { return }
-            activeAlert = .editAvatar(hasAvatar: viewModel.hasAvatar)
-        case .changeNick:
-            break
-        case .changeEmail:
-            break
-        case .logout:
-            activeAlert = .logout
-        case .deleteAccount:
-            activeAlert = .deleteAccount
-        }
-    }
-
-    private func performConfirmedAction(_ action: ProfileSettingsAction) {
-        switch action {
-        case .changeAvatar:
-            break
-        case .changeNick:
-            break
-        case .changeEmail:
-            break
-        case .logout:
-            activeAlert = nil
-            onLogout()
-        case .deleteAccount:
-            break
         }
     }
 

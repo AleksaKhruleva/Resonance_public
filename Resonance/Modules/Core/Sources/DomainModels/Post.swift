@@ -1,7 +1,7 @@
 import Foundation
 
 public struct Post: Identifiable, Hashable {
-
+    
     public let id: Int
     public let publishDate: String
     public let isOwnedByCurrentUser: Bool
@@ -12,7 +12,7 @@ public struct Post: Identifiable, Hashable {
     public let audio: Audio?
     public var likesCount: Int
     public var isLiked: Bool
-
+    
     public init(
         id: Int,
         publishDate: String,

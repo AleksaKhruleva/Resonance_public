@@ -49,8 +49,11 @@ struct CreateAddressedQuestionView: View {
         .toolbarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button("Отмена") {
+                Button {
                     dismiss()
+                } label: {
+                    Text("Отмена")
+                        .fontWeight(.medium)
                 }
                 .disabled(viewModel.state == .publishing)
             }

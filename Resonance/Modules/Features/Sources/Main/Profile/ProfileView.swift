@@ -14,7 +14,7 @@ struct ProfileView: View {
 
     init(
         nick: String,
-        currentUser: CurrentUser,
+        currentUser: CurrentUserInfo,
         onSettingsButtonTap: (() -> Void)?,
         onAuthorTap: ((String) -> Void)?,
         onPostTap: ((Post) -> Void)?,
@@ -51,7 +51,7 @@ struct ProfileView: View {
         .toolbar { toolbarButton }
         .loading(viewModel.state == .loadingProfile || viewModel.state == .refreshingProfile)
         .toast(
-            viewModel.toast,
+            viewModel.activeToast,
             onTap: {
                 viewModel.handle(.dismissToast)
             }
@@ -99,7 +99,17 @@ struct ProfileView: View {
             }
 
             let avatarData = notification.userInfo?[ProfileSettingsUpdateNotification.avatarDataKey] as? Data
-            viewModel.handle(.profileSettingsUpdated(userNick: userNick, avatarData: avatarData))
+            let newNick = notification.userInfo?[ProfileSettingsUpdateNotification.newUserNickKey] as? String
+            let avatarWasUpdated = notification.userInfo?[ProfileSettingsUpdateNotification.avatarWasUpdatedKey] as? Bool ?? false
+
+            viewModel.handle(
+                .profileSettingsUpdated(
+                    userNick: userNick,
+                    newNick: newNick,
+                    avatarData: avatarData,
+                    avatarWasUpdated: avatarWasUpdated
+                )
+            )
         }
         .sheet(item: $addressedQuestionRecipient) { recipient in
             NavigationStack {

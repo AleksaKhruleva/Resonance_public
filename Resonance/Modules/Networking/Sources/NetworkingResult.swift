@@ -58,28 +58,12 @@ public enum NetworkingError: LocalizedError {
 
 public struct BusinessError: LocalizedError, Equatable {
     public let compCode: Int
-    public let reasonCodeS: String?
-    public let reasonCodeM: String?
 
-    public init(
-        compCode: Int,
-        reasonCodeS: String? = nil,
-        reasonCodeM: String? = nil
-    ) {
+    public init(compCode: Int) {
         self.compCode = compCode
-        self.reasonCodeS = reasonCodeS
-        self.reasonCodeM = reasonCodeM
     }
 
     public var errorDescription: String? {
-        if let reasonCodeM, !reasonCodeM.isEmpty {
-            return reasonCodeM
-        }
-
-        if let reasonCodeS, !reasonCodeS.isEmpty {
-            return reasonCodeS
-        }
-
         return "Ошибка бизнес-логики. Код: \(compCode)."
     }
 }

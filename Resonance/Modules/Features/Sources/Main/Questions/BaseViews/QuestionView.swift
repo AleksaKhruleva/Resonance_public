@@ -19,7 +19,7 @@ struct QuestionView: View {
     private let onDeleteTap: (() -> Void)?
     private let animatesTextExpansion: Bool
 
-    @Environment(UserStore.self) private var userStore
+    @Environment(CurrentUserInfoStore.self) private var currentUserInfoStore
     @Environment(AudioPlayerStore.self) private var audioPlayerStore
 
     @State private var isExpanded = false
@@ -41,7 +41,7 @@ struct QuestionView: View {
         }
 
         if let recipient = question.recipient {
-            guard recipient.id == userStore.currentUser.id else {
+            guard recipient.id == currentUserInfoStore.id else {
                 return false
             }
             return question.answersCount == 0

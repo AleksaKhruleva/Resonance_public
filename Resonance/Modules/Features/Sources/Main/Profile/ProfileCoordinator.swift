@@ -16,7 +16,7 @@ struct ProfileCoordinator: View {
     private let onRoute: ((Route) -> Void)?
     private let onLogout: () -> Void
 
-    @Environment(UserStore.self) private var userStore
+    @Environment(CurrentUserInfoStore.self) private var currentUserInfoStore
 
     init(
         route: Route,
@@ -33,7 +33,7 @@ struct ProfileCoordinator: View {
         case .profile(let nick):
             ProfileView(
                 nick: nick,
-                currentUser: userStore.currentUser,
+                currentUser: currentUserInfoStore.currentUserInfo,
                 onSettingsButtonTap: {
                     onRoute?(.settings)
                 },
@@ -55,7 +55,7 @@ struct ProfileCoordinator: View {
             )
         case .settings:
             ProfileSettingsView(
-                currentUser: userStore.currentUser,
+                currentUser: currentUserInfoStore.currentUserInfo,
                 onLogout: onLogout
             )
         case .subscribersList(let userNick):

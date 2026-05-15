@@ -49,7 +49,7 @@ final class PostsFeedViewModel {
     private var handledRefreshTrigger = 0
     private var postLikeChangedCancellable: AnyCancellable?
 
-    private let currentUser: CurrentUser
+    private let currentUser: CurrentUserInfo
     private let onAuthorTap: ((String) -> Void)?
     private let onNotificationsTap: (() -> Void)?
     private let postService: PostService
@@ -75,7 +75,7 @@ final class PostsFeedViewModel {
     // MARK: - Internal Init
 
     init(
-        currentUser: CurrentUser,
+        currentUser: CurrentUserInfo,
         onAuthorTap: ((String) -> Void)?,
         onNotificationsTap: (() -> Void)? = nil,
         postService: PostService = PostService()
@@ -151,15 +151,15 @@ final class PostsFeedViewModel {
 
         state = isRefreshing ? .refreshingFeed : .loadingFeed
 
+        if isRefreshing {
+            try? await Task.sleep(nanoseconds: 0_500_000_000)
+        }
+
         let result = await postService.getPostsFeed(
             latestPostId: Self.maxPostId,
             batchSize: Self.batchSize,
             mode: Self.feedMode
         )
-
-        //        if isRefreshing {
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-        //        }
 
         switch result {
         case .success(let loadedPosts):
@@ -183,8 +183,6 @@ final class PostsFeedViewModel {
 
         state = .loadingNextBatch
 
-        try? await Task.sleep(nanoseconds: 2_000_000_000) // TODO: Delete later
-
         let result = await postService.getPostsFeed(
             latestPostId: latestPostId,
             batchSize: Self.batchSize,
@@ -196,6 +194,7 @@ final class PostsFeedViewModel {
             posts.append(contentsOf: loadedPosts)
             latestPostId = loadedPosts.map(\.id).min() ?? Self.maxPostId
             hasMorePosts = loadedPosts.count == Self.batchSize
+            lastFeedLoadedAt = Date()
             state = .content
         case .failure:
             state = .content

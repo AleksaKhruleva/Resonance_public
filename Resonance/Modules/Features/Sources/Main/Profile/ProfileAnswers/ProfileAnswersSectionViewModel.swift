@@ -12,6 +12,7 @@ final class ProfileAnswersSectionViewModel {
         case loadFeed
         case refreshFeed
         case invalidateFeed
+        case userNickChanged(String)
         case loadNextBatchIfNeeded(questionId: Int)
         case openUserProfile(userNick: String)
         case openQuestionDetails(question: Question)
@@ -60,7 +61,7 @@ final class ProfileAnswersSectionViewModel {
     private var deletingAnswerIds = Set<Int>()
     private var deletingQuestionIds = Set<Int>()
 
-    private let userNick: String
+    private var userNick: String
     private let isOwnProfile: Bool
     private let questionService: QuestionService
     private let answerService: AnswerService
@@ -115,6 +116,9 @@ final class ProfileAnswersSectionViewModel {
         case .refreshFeed:
             Task { await refreshFeed() }
         case .invalidateFeed:
+            invalidateFeed()
+        case .userNickChanged(let userNick):
+            self.userNick = userNick
             invalidateFeed()
         case .loadNextBatchIfNeeded(let questionId):
             guard questionId == latestQuestionId else { return }
@@ -221,8 +225,6 @@ final class ProfileAnswersSectionViewModel {
 
         state = .loadingNextBatch
 
-//        try? await Task.sleep(nanoseconds: 5_000_000_000) // TODO: Delete later
-
         let result = await answerService.getAnswersFeed(
             for: userNick,
             questionId: latestQuestionId,
@@ -235,6 +237,7 @@ final class ProfileAnswersSectionViewModel {
             questions.append(contentsOf: visibleQuestions(from: loadedQuestions))
             latestQuestionId = loadedQuestions.map(\.id).min() ?? Self.maxQuestionId
             hasMoreQuestions = loadedQuestions.count == Self.batchSize
+            lastFeedLoadedAt = Date()
             state = .content
         case .failure:
             state = .content
@@ -518,7 +521,9 @@ final class ProfileAnswersSectionViewModel {
 
     private func visibleQuestion(from question: Question) -> Question? {
         var visibleQuestion = question
-        visibleQuestion.answers = question.answers.filter(shouldShowAnswerInPreview)
+        visibleQuestion.answers = QuestionAnswerPreview.limitedAnswers(
+            question.answers.filter(shouldShowAnswerInPreview)
+        )
 
         guard !visibleQuestion.answers.isEmpty else { return nil }
 
@@ -544,6 +549,7 @@ final class ProfileAnswersSectionViewModel {
         }
 
         mergedQuestion.answers.append(contentsOf: preservedAnswers)
+        mergedQuestion.answers = QuestionAnswerPreview.limitedAnswers(mergedQuestion.answers)
         return mergedQuestion
     }
 

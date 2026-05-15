@@ -5,8 +5,6 @@ import UIComponents
 
 struct ProfileAnswersSectionView: View {
 
-    private static let answerPreviewLimit = 3
-
     private let minHeight: CGFloat
     private let availableWidth: CGFloat
     private let viewModel: ProfileAnswersSectionViewModel
@@ -177,7 +175,7 @@ struct ProfileAnswersSectionView: View {
     private var answersContent: some View {
         LazyVStack(spacing: 0) {
             ForEach(viewModel.questions) { question in
-                let previewAnswers = Array(question.answers.prefix(Self.answerPreviewLimit))
+                let previewAnswers = QuestionAnswerPreview.limitedAnswers(question.answers)
 
                 QuestionView(
                     question: question,

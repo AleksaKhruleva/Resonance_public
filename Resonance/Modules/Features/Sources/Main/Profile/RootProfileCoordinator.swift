@@ -7,7 +7,7 @@ struct RootProfileCoordinator: View {
         case profile(ProfileCoordinator.Route)
     }
 
-    @Environment(UserStore.self) private var userStore
+    @Environment(CurrentUserInfoStore.self) private var currentUserInfoStore
     @State private var path = NavigationPath()
     private let onLogout: () -> Void
 
@@ -18,7 +18,7 @@ struct RootProfileCoordinator: View {
     var body: some View {
         NavigationStack(path: $path) {
             ProfileCoordinator(
-                route: .profile(userNick: userStore.currentUser.nick),
+                route: .profile(userNick: currentUserInfoStore.nick),
                 onLogout: onLogout,
                 onRoute: { nextRoute in
                     path.append(Route.profile(nextRoute))

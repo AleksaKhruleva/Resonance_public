@@ -16,6 +16,8 @@ public enum ToastMessage: Equatable {
     case answerPublishingFailed
     case reportSent
     case reportSendingFailed
+    case nickChanged
+    case nickChangingFailed
 
     public var text: String {
         switch self {
@@ -60,12 +62,18 @@ public enum ToastMessage: Equatable {
 
         case .reportSendingFailed:
             return "Не удалось отправить жалобу"
+
+        case .nickChanged:
+            return "Ник изменен"
+
+        case .nickChangingFailed:
+            return "Не удалось обновить ник"
         }
     }
 
     public var kind: ToastKind {
         switch self {
-        case .reportSent:
+        case .reportSent, .nickChanged:
             return .success
         default:
             return .error

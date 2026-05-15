@@ -1,6 +1,7 @@
 import SwiftUI
 import Networking
 import Core
+import Combine
 
 @MainActor
 @Observable
@@ -9,29 +10,37 @@ final class QuestionsFeedViewModel {
     // MARK: - Internal Types
 
     enum Intent {
+
+        // MARK: Feed
         case loadFeed
         case refreshFeed
         case refreshFeedIfNeeded(trigger: Int, filter: FeedFilter?)
         case loadNextBatchIfNeeded(questionId: Int)
         case selectFilter(FeedFilter)
+
+        // MARK: Navigation
         case openUserProfile(userNick: String)
         case openQuestionDetails(question: Question)
         case openNotifications
+
+        // MARK: Answers
         case answerPublished(questionId: Int)
         case toggleAnswerLike(answerId: Int)
-        case answerLikeChanged(answerId: Int, isLiked: Bool, likesCount: Int)
         case requestAnswerDeletion(answerId: Int)
         case dismissAnswerDeletion
         case cancelAnswerDeletion
         case confirmAnswerDeletion
-        case answerDeleted(answerId: Int)
         case toggleBestAnswer(questionId: Int, answerId: Int)
         case bestAnswerChanged(questionId: Int, answerId: Int, isBest: Bool)
+
+        // MARK: Questions
         case requestQuestionDeletion(questionId: Int)
         case dismissQuestionDeletion
         case cancelQuestionDeletion
         case confirmQuestionDeletion
-        case questionDeleted(questionId: Int)
+
+        // MARK: Toast
+        case reportSent
         case dismissToast
     }
 
@@ -77,6 +86,7 @@ final class QuestionsFeedViewModel {
     private var updatingBestAnswerIds = Set<Int>()
     private var deletingQuestionIds = Set<Int>()
     private var handledRefreshTrigger = 0
+    private var notificationCancellables = Set<AnyCancellable>()
 
     private let questionService: QuestionService
     private let answerService: AnswerService
@@ -116,6 +126,7 @@ final class QuestionsFeedViewModel {
         self.onAuthorTap = onAuthorTap
         self.onQuestionTap = onQuestionTap
         self.onNotificationsTap = onNotificationsTap
+        observeNotifications()
     }
 
     // MARK: - Internal Methods
@@ -144,11 +155,9 @@ final class QuestionsFeedViewModel {
         case .openNotifications:
             onNotificationsTap?()
         case .answerPublished(let questionId):
-            Task { await refreshAnsweredQuestion(questionId: questionId) }
+            notifyAnswerPublished(questionId: questionId)
         case .toggleAnswerLike(let answerId):
             Task { await toggleAnswerLike(answerId: answerId, filter: selectedFilter) }
-        case .answerLikeChanged(let answerId, let isLiked, let likesCount):
-            applyAnswerLikeChanged(answerId: answerId, isLiked: isLiked, likesCount: likesCount)
         case .requestAnswerDeletion(let answerId):
             requestAnswerDeletion(answerId: answerId)
         case .dismissAnswerDeletion:
@@ -158,8 +167,6 @@ final class QuestionsFeedViewModel {
             answerPendingDeletion = nil
         case .confirmAnswerDeletion:
             Task { await confirmAnswerDeletion() }
-        case .answerDeleted(let answerId):
-            removeAnswer(answerId: answerId)
         case .toggleBestAnswer(let questionId, let answerId):
             Task { await toggleBestAnswer(questionId: questionId, answerId: answerId) }
         case .bestAnswerChanged(let questionId, let answerId, let isBest):
@@ -173,32 +180,26 @@ final class QuestionsFeedViewModel {
             questionPendingDeletion = nil
         case .confirmQuestionDeletion:
             Task { await confirmQuestionDeletion() }
-        case .questionDeleted(let questionId):
-            removeQuestion(questionId: questionId)
+        case .reportSent:
+            toast = ToastMessage.reportSent.item
         case .dismissToast:
             toast = nil
         }
     }
 
-    func isAnswerLikeLoading(answerId: Int) -> Bool {
+    func shouldDisableAnswerActions(questionId: Int, answerId: Int) -> Bool {
         likingAnswerIds.contains(answerId)
+        || deletingAnswerIds.contains(answerId)
+        || updatingBestAnswerIds.contains(answerId)
+        || deletingQuestionIds.contains(questionId)
     }
+}
 
-    func isAnswerDeleting(answerId: Int) -> Bool {
-        deletingAnswerIds.contains(answerId)
-    }
+// MARK: - Feed
 
-    func isBestAnswerUpdating(answerId: Int) -> Bool {
-        updatingBestAnswerIds.contains(answerId)
-    }
+private extension QuestionsFeedViewModel {
 
-    func isQuestionDeleting(questionId: Int) -> Bool {
-        deletingQuestionIds.contains(questionId)
-    }
-
-    // MARK: - Private Methods
-
-    private func refreshFeedIfNeeded(trigger: Int, filter: FeedFilter?) {
+    func refreshFeedIfNeeded(trigger: Int, filter: FeedFilter?) {
         guard trigger != handledRefreshTrigger else { return }
         handledRefreshTrigger = trigger
 
@@ -210,7 +211,7 @@ final class QuestionsFeedViewModel {
         Task { await loadFeed(for: selectedFilter, forcedUpdate: true) }
     }
 
-    private func loadFeed(for filter: FeedFilter, forcedUpdate: Bool = false) async {
+    func loadFeed(for filter: FeedFilter, forcedUpdate: Bool = false) async {
         var storage = feedStorage(for: filter)
         guard storage.loadingKind == nil else { return }
         guard shouldUpdateData(for: storage) || forcedUpdate else { return }
@@ -229,7 +230,7 @@ final class QuestionsFeedViewModel {
         switch result {
         case .success(let loadedQuestions):
             var storage = feedStorage(for: filter)
-            storage.questions = loadedQuestions
+            storage.questions = QuestionAnswerPreview.limitedQuestions(loadedQuestions)
             storage.latestQuestionId = loadedQuestions.map(\.id).min() ?? Self.maxQuestionId
             storage.hasMoreQuestions = loadedQuestions.count == Self.batchSize
             storage.lastFeedLoadedAt = Date()
@@ -251,7 +252,7 @@ final class QuestionsFeedViewModel {
         }
     }
 
-    private func loadNextBatch(for filter: FeedFilter) async {
+    func loadNextBatch(for filter: FeedFilter) async {
         var storage = feedStorage(for: filter)
         guard storage.loadingKind == nil, storage.hasMoreQuestions, !storage.questions.isEmpty else { return }
 
@@ -260,8 +261,6 @@ final class QuestionsFeedViewModel {
         storage.hasError = false
         setStorage(storage, for: filter)
         applyStorageIfNeeded(for: filter)
-
-//        try? await Task.sleep(nanoseconds: 5_000_000_000) // TODO: Delete later
 
         let result = await questionService.getQuestionsFeed(
             questionId: latestQuestionId,
@@ -272,9 +271,10 @@ final class QuestionsFeedViewModel {
         switch result {
         case .success(let loadedQuestions):
             var storage = feedStorage(for: filter)
-            storage.questions.append(contentsOf: loadedQuestions)
+            storage.questions.append(contentsOf: QuestionAnswerPreview.limitedQuestions(loadedQuestions))
             storage.latestQuestionId = loadedQuestions.map(\.id).min() ?? latestQuestionId
             storage.hasMoreQuestions = loadedQuestions.count == Self.batchSize
+            storage.lastFeedLoadedAt = Date()
             storage.loadingKind = nil
             storage.hasError = false
             setStorage(storage, for: filter)
@@ -291,7 +291,26 @@ final class QuestionsFeedViewModel {
         }
     }
 
-    private func toggleAnswerLike(answerId: Int, filter: FeedFilter) async {
+    func refreshAnsweredQuestion(questionId: Int) async {
+        let result = await questionService.getQuestionDetails(
+            questionId: questionId,
+            batchSize: Self.batchSize
+        )
+
+        switch result {
+        case .success(let updatedQuestion):
+            replaceQuestion(updatedQuestion)
+        case .failure:
+            applyAnswerPublished(questionId: questionId)
+        }
+    }
+}
+
+// MARK: - Answer Actions
+
+private extension QuestionsFeedViewModel {
+
+    func toggleAnswerLike(answerId: Int, filter: FeedFilter) async {
         guard
             !likingAnswerIds.contains(answerId),
             var storage = feedStorageByFilter[filter],
@@ -345,7 +364,7 @@ final class QuestionsFeedViewModel {
         }
     }
 
-    private func requestAnswerDeletion(answerId: Int) {
+    func requestAnswerDeletion(answerId: Int) {
         guard
             !isAnswerDeleteConfirmationPresented,
             !deletingAnswerIds.contains(answerId),
@@ -359,7 +378,7 @@ final class QuestionsFeedViewModel {
         isAnswerDeleteConfirmationPresented = true
     }
 
-    private func confirmAnswerDeletion() async {
+    func confirmAnswerDeletion() async {
         guard
             let answer = answerPendingDeletion,
             !deletingAnswerIds.contains(answer.id)
@@ -377,19 +396,13 @@ final class QuestionsFeedViewModel {
         switch result {
         case .success:
             removeAnswer(answerId: answer.id)
-            NotificationCenter.default.post(
-                name: .answerDeleted,
-                object: nil,
-                userInfo: [
-                    AnswerDeletionNotification.answerIdKey: answer.id
-                ]
-            )
+            notifyAnswerDeleted(answerId: answer.id)
         case .failure:
             showToast(.deleteAnswerFailed)
         }
     }
 
-    private func toggleBestAnswer(questionId: Int, answerId: Int) async {
+    func toggleBestAnswer(questionId: Int, answerId: Int) async {
         guard
             !updatingBestAnswerIds.contains(answerId),
             let question = questions.first(where: { $0.id == questionId }),
@@ -425,8 +438,13 @@ final class QuestionsFeedViewModel {
             showToast(.markBestAnswerFailed)
         }
     }
+}
 
-    private func requestQuestionDeletion(questionId: Int) {
+// MARK: - Question Actions
+
+private extension QuestionsFeedViewModel {
+
+    func requestQuestionDeletion(questionId: Int) {
         guard
             !isDeleteConfirmationPresented,
             !deletingQuestionIds.contains(questionId),
@@ -440,7 +458,7 @@ final class QuestionsFeedViewModel {
         isDeleteConfirmationPresented = true
     }
 
-    private func confirmQuestionDeletion() async {
+    func confirmQuestionDeletion() async {
         guard
             let question = questionPendingDeletion,
             !deletingQuestionIds.contains(question.id)
@@ -461,20 +479,18 @@ final class QuestionsFeedViewModel {
         switch result {
         case .success:
             removeQuestion(questionId: question.id)
-            NotificationCenter.default.post(
-                name: .questionDeleted,
-                object: nil,
-                userInfo: [
-                    QuestionDeletionNotification.questionIdKey: question.id,
-                    QuestionDeletionNotification.authorNickKey: question.authorNick
-                ]
-            )
+            notifyQuestionDeleted(question: question)
         case .failure:
             showToast(.deleteQuestionFailed)
         }
     }
+}
 
-    private func removeQuestion(questionId: Int) {
+// MARK: - State Mutations
+
+private extension QuestionsFeedViewModel {
+
+    func removeQuestion(questionId: Int) {
         for filter in FeedFilter.allCases {
             var storage = feedStorage(for: filter)
             storage.questions.removeAll { $0.id == questionId }
@@ -483,7 +499,7 @@ final class QuestionsFeedViewModel {
         applyCurrentStorage()
     }
 
-    private func applyAnswerLikeChanged(answerId: Int, isLiked: Bool, likesCount: Int) {
+    func applyAnswerLikeChanged(answerId: Int, isLiked: Bool, likesCount: Int) {
         for filter in FeedFilter.allCases {
             var storage = feedStorage(for: filter)
             storage.questions = updatedQuestions(storage.questions, answerId: answerId) { answer in
@@ -496,7 +512,7 @@ final class QuestionsFeedViewModel {
         applyCurrentStorage()
     }
 
-    private func removeAnswer(answerId: Int) {
+    func removeAnswer(answerId: Int) {
         for filter in FeedFilter.allCases {
             var storage = feedStorage(for: filter)
 
@@ -520,7 +536,7 @@ final class QuestionsFeedViewModel {
         applyCurrentStorage()
     }
 
-    private func applyAnswerPublished(questionId: Int) {
+    func applyAnswerPublished(questionId: Int) {
         for filter in FeedFilter.allCases {
             var storage = feedStorage(for: filter)
             guard let questionIndex = storage.questions.firstIndex(where: { $0.id == questionId }) else {
@@ -534,35 +550,21 @@ final class QuestionsFeedViewModel {
         applyCurrentStorage()
     }
 
-    private func refreshAnsweredQuestion(questionId: Int) async {
-        let result = await questionService.getQuestionDetails(
-            questionId: questionId,
-            batchSize: Self.batchSize
-        )
-
-        switch result {
-        case .success(let updatedQuestion):
-            replaceQuestion(updatedQuestion)
-        case .failure:
-            applyAnswerPublished(questionId: questionId)
-        }
-    }
-
-    private func replaceQuestion(_ updatedQuestion: Question) {
+    func replaceQuestion(_ updatedQuestion: Question) {
         for filter in FeedFilter.allCases {
             var storage = feedStorage(for: filter)
             guard let questionIndex = storage.questions.firstIndex(where: { $0.id == updatedQuestion.id }) else {
                 continue
             }
 
-            storage.questions[questionIndex] = updatedQuestion
+            storage.questions[questionIndex] = QuestionAnswerPreview.limitedQuestion(updatedQuestion)
             setStorage(storage, for: filter)
         }
 
         applyCurrentStorage()
     }
 
-    private func applyBestAnswer(
+    func applyBestAnswer(
         questionId: Int,
         answerId: Int,
         isBest: Bool
@@ -588,14 +590,62 @@ final class QuestionsFeedViewModel {
 
         applyCurrentStorage()
     }
+}
 
-    private func answer(answerId: Int) -> Answer? {
+// MARK: - Storage
+
+private extension QuestionsFeedViewModel {
+
+    private func feedStorage(for filter: FeedFilter) -> FeedStorage {
+        feedStorageByFilter[filter] ?? FeedStorage(latestQuestionId: Self.maxQuestionId)
+    }
+
+    private func setStorage(_ storage: FeedStorage, for filter: FeedFilter) {
+        feedStorageByFilter[filter] = storage
+    }
+
+    private func shouldUpdateData(for storage: FeedStorage) -> Bool {
+        guard let lastFeedLoadedAt = storage.lastFeedLoadedAt else { return true }
+        return Date().timeIntervalSince(lastFeedLoadedAt) > Self.feedRefreshInterval
+    }
+
+    func applyStorageIfNeeded(for filter: FeedFilter) {
+        guard selectedFilter == filter else { return }
+        applyCurrentStorage()
+    }
+
+    func applyCurrentStorage() {
+        let storage = currentStorage
+        questions = storage.questions
+        state = state(for: storage)
+    }
+
+    private func state(for storage: FeedStorage) -> State {
+        switch storage.loadingKind {
+        case .feed:
+            return storage.questions.isEmpty ? .loadingFeed : .refreshingFeed
+        case .nextBatch:
+            return .loadingNextBatch
+        case nil:
+            if storage.hasError, storage.questions.isEmpty {
+                return .error(storage.errorDescription)
+            }
+            return storage.questions.isEmpty ? .empty : .content
+        }
+    }
+}
+
+// MARK: - Answer Helpers
+
+private extension QuestionsFeedViewModel {
+
+    func answer(answerId: Int) -> Answer? {
         questions.lazy
             .flatMap(\.answers)
             .first { $0.id == answerId }
     }
 
-    private func answerIndexes(answerId: Int, in questions: [Question]) -> (question: Int, answer: Int)? {
+    func answerIndexes(answerId: Int, in questions: [Question]) -> (question: Int, answer: Int)? {
         for questionIndex in questions.indices {
             guard let answerIndex = questions[questionIndex].answers.firstIndex(where: { $0.id == answerId }) else {
                 continue
@@ -606,7 +656,7 @@ final class QuestionsFeedViewModel {
         return nil
     }
 
-    private func updatedQuestions(
+    func updatedQuestions(
         _ questions: [Question],
         answerId: Int,
         updateAnswer: (inout Answer) -> Void
@@ -622,7 +672,7 @@ final class QuestionsFeedViewModel {
         return updatedQuestions
     }
 
-    private func updatedQuestions(
+    func updatedQuestions(
         _ questions: [Question],
         questionId: Int,
         answerId: Int,
@@ -642,55 +692,137 @@ final class QuestionsFeedViewModel {
         updatedQuestions[questionIndex] = updatedQuestion
         return updatedQuestions
     }
+}
 
-    private func feedStorage(for filter: FeedFilter) -> FeedStorage {
-        feedStorageByFilter[filter] ?? FeedStorage(latestQuestionId: Self.maxQuestionId)
-    }
+// MARK: - Notifications
 
-    private func setStorage(_ storage: FeedStorage, for filter: FeedFilter) {
-        feedStorageByFilter[filter] = storage
-    }
+private extension QuestionsFeedViewModel {
 
-    private func shouldUpdateData(for storage: FeedStorage) -> Bool {
-        guard let lastFeedLoadedAt = storage.lastFeedLoadedAt else { return true }
-        return Date().timeIntervalSince(lastFeedLoadedAt) > Self.feedRefreshInterval
-    }
-
-    private func applyStorageIfNeeded(for filter: FeedFilter) {
-        guard selectedFilter == filter else { return }
-        applyCurrentStorage()
-    }
-
-    private func applyCurrentStorage() {
-        let storage = currentStorage
-        questions = storage.questions
-        state = state(for: storage)
-    }
-
-    private func state(for storage: FeedStorage) -> State {
-        switch storage.loadingKind {
-        case .feed:
-            return storage.questions.isEmpty ? .loadingFeed : .refreshingFeed
-        case .nextBatch:
-            return .loadingNextBatch
-        case nil:
-            if storage.hasError, storage.questions.isEmpty {
-                return .error(storage.errorDescription)
+    func observeNotifications() {
+        NotificationCenter.default
+            .publisher(for: .questionDeleted)
+            .sink { [weak self] notification in
+                Task { @MainActor in
+                    self?.handleQuestionDeletedNotification(notification)
+                }
             }
-            return storage.questions.isEmpty ? .empty : .content
+            .store(in: &notificationCancellables)
+
+        NotificationCenter.default
+            .publisher(for: .answerDeleted)
+            .sink { [weak self] notification in
+                Task { @MainActor in
+                    self?.handleAnswerDeletedNotification(notification)
+                }
+            }
+            .store(in: &notificationCancellables)
+
+        NotificationCenter.default
+            .publisher(for: .answerPublished)
+            .sink { [weak self] notification in
+                Task { @MainActor in
+                    self?.handleAnswerPublishedNotification(notification)
+                }
+            }
+            .store(in: &notificationCancellables)
+
+        NotificationCenter.default
+            .publisher(for: .answerLikeChanged)
+            .sink { [weak self] notification in
+                Task { @MainActor in
+                    self?.handleAnswerLikeChangedNotification(notification)
+                }
+            }
+            .store(in: &notificationCancellables)
+
+        NotificationCenter.default
+            .publisher(for: .bestAnswerChanged)
+            .sink { [weak self] notification in
+                Task { @MainActor in
+                    self?.handleBestAnswerChangedNotification(notification)
+                }
+            }
+            .store(in: &notificationCancellables)
+    }
+
+    func handleQuestionDeletedNotification(_ notification: Notification) {
+        guard let questionId = notification.userInfo?[QuestionDeletionNotification.questionIdKey] as? Int else {
+            return
         }
+
+        removeQuestion(questionId: questionId)
     }
 
-    private func showToast(_ message: ToastMessage) {
-        toast = message.item
+    func handleAnswerDeletedNotification(_ notification: Notification) {
+        guard let answerId = notification.userInfo?[AnswerDeletionNotification.answerIdKey] as? Int else {
+            return
+        }
+
+        removeAnswer(answerId: answerId)
     }
 
-    private func showToastIfNeeded(_ message: ToastMessage, for filter: FeedFilter) {
-        guard selectedFilter == filter else { return }
-        showToast(message)
+    func handleAnswerPublishedNotification(_ notification: Notification) {
+        guard let questionId = notification.userInfo?[AnswerPublishedNotification.questionIdKey] as? Int else {
+            return
+        }
+
+        Task { await refreshAnsweredQuestion(questionId: questionId) }
     }
 
-    private func notifyBestAnswerChanged(
+    func handleAnswerLikeChangedNotification(_ notification: Notification) {
+        guard let answerId = notification.userInfo?[AnswerLikeNotification.answerIdKey] as? Int,
+              let isLiked = notification.userInfo?[AnswerLikeNotification.isLikedKey] as? Bool,
+              let likesCount = notification.userInfo?[AnswerLikeNotification.likesCountKey] as? Int
+        else {
+            return
+        }
+
+        applyAnswerLikeChanged(answerId: answerId, isLiked: isLiked, likesCount: likesCount)
+    }
+
+    func handleBestAnswerChangedNotification(_ notification: Notification) {
+        guard let questionId = notification.userInfo?[BestAnswerNotification.questionIdKey] as? Int,
+              let answerId = notification.userInfo?[BestAnswerNotification.answerIdKey] as? Int,
+              let isBest = notification.userInfo?[BestAnswerNotification.isBestKey] as? Bool
+        else {
+            return
+        }
+
+        applyBestAnswer(questionId: questionId, answerId: answerId, isBest: isBest)
+    }
+
+    func notifyQuestionDeleted(question: Question) {
+        NotificationCenter.default.post(
+            name: .questionDeleted,
+            object: nil,
+            userInfo: [
+                QuestionDeletionNotification.questionIdKey: question.id,
+                QuestionDeletionNotification.authorNickKey: question.authorNick
+            ]
+        )
+    }
+
+    func notifyAnswerDeleted(answerId: Int) {
+        NotificationCenter.default.post(
+            name: .answerDeleted,
+            object: nil,
+            userInfo: [
+                AnswerDeletionNotification.answerIdKey: answerId
+            ]
+        )
+    }
+
+    func notifyAnswerPublished(questionId: Int) {
+        NotificationCenter.default.post(
+            name: .answerPublished,
+            object: nil,
+            userInfo: [
+                AnswerPublishedNotification.questionIdKey: questionId
+            ]
+        )
+    }
+
+    func notifyBestAnswerChanged(
         questionId: Int,
         answerId: Int,
         isBest: Bool
@@ -706,7 +838,7 @@ final class QuestionsFeedViewModel {
         )
     }
 
-    private func notifyAnswerLikeChanged(answerId: Int, filter: FeedFilter) {
+    func notifyAnswerLikeChanged(answerId: Int, filter: FeedFilter) {
         guard
             let storage = feedStorageByFilter[filter],
             let answer = storage.questions.lazy.flatMap(\.answers).first(where: { $0.id == answerId })
@@ -726,52 +858,16 @@ final class QuestionsFeedViewModel {
     }
 }
 
-extension QuestionsFeedViewModel {
+// MARK: - Toast
 
-    enum FeedFilter: CaseIterable, Hashable {
+private extension QuestionsFeedViewModel {
 
-        case all
-        case following
-        case outgoing
-        case incoming
+    func showToast(_ message: ToastMessage) {
+        toast = message.item
+    }
 
-        var title: String {
-            switch self {
-            case .all:
-                return "Общая лента"
-            case .following:
-                return "Персональная лента"
-            case .outgoing:
-                return "Исходящие вопросы"
-            case .incoming:
-                return "Входящие вопросы"
-            }
-        }
-
-        var navigationBarTitle: String {
-            switch self {
-            case .all:
-                "Общая лента"
-            case .following:
-                "Персональная лента"
-            case .outgoing:
-                "Вопросы от Вас"
-            case .incoming:
-                "Вопросы для Вас"
-            }
-        }
-
-        var mode: QuestionsFeedMode {
-            switch self {
-            case .all:
-                return .all
-            case .following:
-                return .following
-            case .outgoing:
-                return .outgoing
-            case .incoming:
-                return .incoming
-            }
-        }
+    func showToastIfNeeded(_ message: ToastMessage, for filter: FeedFilter) {
+        guard selectedFilter == filter else { return }
+        showToast(message)
     }
 }

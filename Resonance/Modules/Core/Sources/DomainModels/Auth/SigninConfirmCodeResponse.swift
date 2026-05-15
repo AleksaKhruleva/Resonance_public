@@ -1,7 +1,7 @@
 import Foundation
 
 public struct SigninConfirmCodeResponse {
-
+    
     public let user: UserProfile
     public let accessToken: String
     public let refreshToken: String

@@ -2,6 +2,11 @@ import SwiftUI
 import UIComponents
 import Core
 
+enum QuestionsDeepLinkRoute: Hashable {
+    case profile(userNick: String)
+    case questionDetails(questionId: Int)
+}
+
 public struct TabsCoordinator: View {
 
     private enum Tab: Int {
@@ -14,9 +19,12 @@ public struct TabsCoordinator: View {
 
     private let onLogout: () -> Void
 
+    @Environment(AppRouteStore.self) private var appRouteStore
+    @State private var questionsDeepLinkRoute: QuestionsDeepLinkRoute?
+
     @State private var selectedTab: Tab = .questions
     @State private var questionsRefreshTrigger = 0
-    @State private var questionsRefreshFilter: QuestionsFeedViewModel.FeedFilter?
+    @State private var questionsRefreshFilter: FeedFilter?
     @State private var postsRefreshTrigger = 0
     @State private var audioPlayerStore = AudioPlayerStore()
 
@@ -31,6 +39,7 @@ public struct TabsCoordinator: View {
             QuestionsCoordinator(
                 refreshTrigger: $questionsRefreshTrigger,
                 refreshFilter: $questionsRefreshFilter,
+                deepLinkRoute: $questionsDeepLinkRoute,
                 onLogout: onLogout
             )
                 .tabItem { Image(systemName: "questionmark.message") }
@@ -73,6 +82,25 @@ public struct TabsCoordinator: View {
         .environment(audioPlayerStore)
         .font(.system(size: AppFontSize.body, weight: .regular))
         .foregroundStyle(AppColor.text)
+        .onAppear {
+            handlePendingRoute(appRouteStore.pendingRoute)
+        }
+        .onChange(of: appRouteStore.pendingRoute) { _, route in
+            handlePendingRoute(route)
+        }
+    }
+
+    private func handlePendingRoute(_ route: AppRouteStore.Route?) {
+        guard let route else { return }
+        selectedTab = .questions
+
+        switch route {
+        case .userProfile(let userNick):
+            questionsDeepLinkRoute = .profile(userNick: userNick)
+
+        case .questionDetails(let questionId, _):
+            questionsDeepLinkRoute = .questionDetails(questionId: questionId)
+        }
     }
 }
 

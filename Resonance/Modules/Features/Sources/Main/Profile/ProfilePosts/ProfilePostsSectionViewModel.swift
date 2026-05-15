@@ -1,6 +1,7 @@
 import SwiftUI
 import Core
 import Networking
+import Combine
 
 @MainActor
 @Observable
@@ -12,9 +13,9 @@ final class ProfilePostsSectionViewModel {
         case loadFeed
         case refreshFeed
         case invalidateFeed
+        case userNickChanged(String)
         case loadNextBatchIfNeeded(postId: Int)
         case openPostDetails(post: Post)
-        case postLikeChanged(postId: Int, isLiked: Bool, likesCount: Int)
         case dismissToast
     }
 
@@ -36,8 +37,9 @@ final class ProfilePostsSectionViewModel {
     private var hasMorePosts = true
     private var latestPostId = maxPostId
     private var lastFeedLoadedAt: Date?
+    private var postLikeChangedCancellable: AnyCancellable?
 
-    private let userNick: String
+    private var userNick: String
     private let postService: PostService
     private let onPostTap: ((Post) -> Void)?
 
@@ -69,6 +71,7 @@ final class ProfilePostsSectionViewModel {
         self.userNick = userNick
         self.postService = postService
         self.onPostTap = onPostTap
+        observeNotifications()
     }
 
     // MARK: - Internal Methods
@@ -78,27 +81,20 @@ final class ProfilePostsSectionViewModel {
         case .loadFeed:
             Task { await loadFeed() }
         case .refreshFeed:
-            Task { await refreshFeed() }
+            Task { await loadFeed(force: true) }
         case .invalidateFeed:
-            invalidateFeed()
+            lastFeedLoadedAt = nil
+        case .userNickChanged(let userNick):
+            self.userNick = userNick
+            lastFeedLoadedAt = nil
         case .loadNextBatchIfNeeded(let postId):
             guard postId == latestPostId else { return }
             Task { await loadNextBatch() }
         case .openPostDetails(let post):
             onPostTap?(post)
-        case .postLikeChanged(let postId, let isLiked, let likesCount):
-            applyPostLikeChanged(postId: postId, isLiked: isLiked, likesCount: likesCount)
         case .dismissToast:
             toast = nil
         }
-    }
-
-    func refreshFeed() async {
-        await loadFeed(force: true)
-    }
-
-    func invalidateFeed() {
-        lastFeedLoadedAt = nil
     }
 
     // MARK: - Private Methods
@@ -149,6 +145,7 @@ final class ProfilePostsSectionViewModel {
             posts.append(contentsOf: loadedPosts)
             latestPostId = loadedPosts.map(\.id).min() ?? Self.maxPostId
             hasMorePosts = loadedPosts.count == Self.batchSize
+            lastFeedLoadedAt = Date()
             state = .content
         case .failure:
             state = .content
@@ -156,8 +153,25 @@ final class ProfilePostsSectionViewModel {
         }
     }
 
-    private func showToast(_ message: ToastMessage) {
-        toast = message.item
+    private func observeNotifications() {
+        postLikeChangedCancellable = NotificationCenter.default
+            .publisher(for: .postLikeChanged)
+            .sink { [weak self] notification in
+                Task { @MainActor in
+                    self?.handlePostLikeChangedNotification(notification)
+                }
+            }
+    }
+
+    private func handlePostLikeChangedNotification(_ notification: Notification) {
+        guard let postId = notification.userInfo?[PostLikeNotification.postIdKey] as? Int,
+              let isLiked = notification.userInfo?[PostLikeNotification.isLikedKey] as? Bool,
+              let likesCount = notification.userInfo?[PostLikeNotification.likesCountKey] as? Int
+        else {
+            return
+        }
+
+        applyPostLikeChanged(postId: postId, isLiked: isLiked, likesCount: likesCount)
     }
 
     private func applyPostLikeChanged(postId: Int, isLiked: Bool, likesCount: Int) {
@@ -165,5 +179,9 @@ final class ProfilePostsSectionViewModel {
 
         posts[index].isLiked = isLiked
         posts[index].likesCount = likesCount
+    }
+
+    private func showToast(_ message: ToastMessage) {
+        toast = message.item
     }
 }

@@ -195,6 +195,7 @@ final class QuestionDetailedViewModel {
             } else {
                 hasMoreAnswers = false
             }
+            lastQuestionLoadedAt = Date()
             state = .content
         case .failure:
             state = .content

@@ -5,6 +5,12 @@ enum AuthFlow {
     case signup
 }
 
+enum AuthRoute: Hashable {
+    case enterEmail(authFlow: AuthFlow)
+    case enterCode(authFlow: AuthFlow, accessToken: String, email: String)
+    case enterNick(accessToken: String, email: String)
+}
+
 public struct AuthCoordinator: View {
 
     private let onFinishAuth: () -> Void

@@ -9,16 +9,16 @@ enum HTTPMethod: String {
 }
 
 enum AuthorizationPolicy {
-    case none
     case bearer
+    case other
 }
 
 final class NetworkingManager {
 
-    private static let requestTimeout: TimeInterval = 30
-
     private let baseURL: String
     private let session: URLSession
+
+    private static let requestTimeout: TimeInterval = 20
 
     public init(baseURL: String = "https://resonance-appp.ru/appiii", session: URLSession = .shared) {
         self.baseURL = baseURL
@@ -28,9 +28,9 @@ final class NetworkingManager {
     public func request<T: Decodable>(
         endpoint: String,
         method: HTTPMethod,
-        authorization: AuthorizationPolicy = .none,
+        authorization: AuthorizationPolicy,
         headers: [String: String]? = nil,
-        body: Data? = nil
+        body: Data?
     ) async throws -> T {
         guard let url = URL(string: baseURL + endpoint) else {
             throw NetworkingError.invalidURL

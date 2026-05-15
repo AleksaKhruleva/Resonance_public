@@ -1,6 +1,7 @@
 import SwiftUI
 import Core
 import Networking
+import Combine
 
 @MainActor
 @Observable
@@ -9,27 +10,38 @@ final class ProfileQuestionsSectionViewModel {
     // MARK: - Internal Types
 
     enum Intent {
+
+        // MARK: Feed
         case loadFeed
         case refreshFeed
         case invalidateFeed
+        case userNickChanged(String)
         case loadNextBatchIfNeeded(questionId: Int)
+
+        // MARK: Navigation
         case openUserProfile(userNick: String)
         case openQuestionDetails(question: Question)
+
+        // MARK: Reporting
+        case reportSent
+
+        // MARK: Questions
+        case requestQuestionDeletion(questionId: Int)
+        case dismissQuestionDeletion
+        case cancelQuestionDeletion
+        case confirmQuestionDeletion
+
+        // MARK: Answers
         case answerPublished(questionId: Int)
         case toggleAnswerLike(answerId: Int)
-        case answerLikeChanged(answerId: Int, isLiked: Bool, likesCount: Int)
         case toggleBestAnswer(questionId: Int, answerId: Int)
         case bestAnswerChanged(questionId: Int, answerId: Int, isBest: Bool)
         case requestAnswerDeletion(answerId: Int)
         case dismissAnswerDeletion
         case cancelAnswerDeletion
         case confirmAnswerDeletion
-        case answerDeleted(answerId: Int)
-        case requestQuestionDeletion(questionId: Int)
-        case dismissQuestionDeletion
-        case cancelQuestionDeletion
-        case confirmQuestionDeletion
-        case questionDeleted(questionId: Int)
+
+        // MARK: Toast
         case dismissToast
     }
 
@@ -59,8 +71,9 @@ final class ProfileQuestionsSectionViewModel {
     private var updatingBestAnswerIds = Set<Int>()
     private var deletingAnswerIds = Set<Int>()
     private var deletingQuestionIds = Set<Int>()
+    private var notificationCancellables = Set<AnyCancellable>()
 
-    private let userNick: String
+    private var userNick: String
     private let isOwnProfile: Bool
     private let questionService: QuestionService
     private let answerService: AnswerService
@@ -104,6 +117,8 @@ final class ProfileQuestionsSectionViewModel {
         self.answerService = answerService
         self.onAuthorTap = onAuthorTap
         self.onQuestionTap = onQuestionTap
+
+        observeNotifications()
     }
 
     // MARK: - Internal Methods
@@ -113,9 +128,12 @@ final class ProfileQuestionsSectionViewModel {
         case .loadFeed:
             Task { await loadFeed() }
         case .refreshFeed:
-            Task { await refreshFeed() }
+            Task { await loadFeed(force: true) }
         case .invalidateFeed:
-            invalidateFeed()
+            lastFeedLoadedAt = nil
+        case .userNickChanged(let userNick):
+            self.userNick = userNick
+            lastFeedLoadedAt = nil
         case .loadNextBatchIfNeeded(let questionId):
             guard questionId == latestQuestionId else { return }
             Task { await loadNextBatch() }
@@ -124,12 +142,21 @@ final class ProfileQuestionsSectionViewModel {
             onAuthorTap?(authorNick)
         case .openQuestionDetails(let question):
             onQuestionTap?(question)
+        case .reportSent:
+            toast = ToastMessage.reportSent.item
+        case .requestQuestionDeletion(let questionId):
+            requestQuestionDeletion(questionId: questionId)
+        case .dismissQuestionDeletion:
+            isDeleteConfirmationPresented = false
+        case .cancelQuestionDeletion:
+            isDeleteConfirmationPresented = false
+            questionPendingDeletion = nil
+        case .confirmQuestionDeletion:
+            Task { await confirmQuestionDeletion() }
         case .answerPublished(let questionId):
-            Task { await refreshAnsweredQuestion(questionId: questionId) }
+            notifyAnswerPublished(questionId: questionId)
         case .toggleAnswerLike(let answerId):
             Task { await toggleAnswerLike(answerId: answerId) }
-        case .answerLikeChanged(let answerId, let isLiked, let likesCount):
-            applyAnswerLikeChanged(answerId: answerId, isLiked: isLiked, likesCount: likesCount)
         case .toggleBestAnswer(let questionId, let answerId):
             Task { await toggleBestAnswer(questionId: questionId, answerId: answerId) }
         case .bestAnswerChanged(let questionId, let answerId, let isBest):
@@ -143,51 +170,24 @@ final class ProfileQuestionsSectionViewModel {
             answerPendingDeletion = nil
         case .confirmAnswerDeletion:
             Task { await confirmAnswerDeletion() }
-        case .answerDeleted(let answerId):
-            removeAnswer(answerId: answerId)
-        case .requestQuestionDeletion(let questionId):
-            requestQuestionDeletion(questionId: questionId)
-        case .dismissQuestionDeletion:
-            isDeleteConfirmationPresented = false
-        case .cancelQuestionDeletion:
-            isDeleteConfirmationPresented = false
-            questionPendingDeletion = nil
-        case .confirmQuestionDeletion:
-            Task { await confirmQuestionDeletion() }
-        case .questionDeleted(let questionId):
-            removeQuestion(questionId: questionId)
         case .dismissToast:
             toast = nil
         }
     }
 
-    func isAnswerLikeLoading(answerId: Int) -> Bool {
+    func shouldDisableAnswerActions(questionId: Int, answerId: Int) -> Bool {
         likingAnswerIds.contains(answerId)
+        || deletingAnswerIds.contains(answerId)
+        || updatingBestAnswerIds.contains(answerId)
+        || deletingQuestionIds.contains(questionId)
     }
+}
 
-    func isBestAnswerUpdating(answerId: Int) -> Bool {
-        updatingBestAnswerIds.contains(answerId)
-    }
+// MARK: - Feed
 
-    func isAnswerDeleting(answerId: Int) -> Bool {
-        deletingAnswerIds.contains(answerId)
-    }
+private extension ProfileQuestionsSectionViewModel {
 
-    func isQuestionDeleting(questionId: Int) -> Bool {
-        deletingQuestionIds.contains(questionId)
-    }
-
-    func refreshFeed() async {
-        await loadFeed(force: true)
-    }
-
-    func invalidateFeed() {
-        lastFeedLoadedAt = nil
-    }
-
-    // MARK: - Private Methods
-
-    private func loadFeed(force: Bool = false) async {
+    func loadFeed(force: Bool = false) async {
         guard !isLoading, force || shouldUpdateData else { return }
 
         state = isRefreshing ? .refreshingFeed : .loadingFeed
@@ -201,7 +201,7 @@ final class ProfileQuestionsSectionViewModel {
 
         switch result {
         case .success(let loadedQuestions):
-            questions = loadedQuestions
+            questions = QuestionAnswerPreview.limitedQuestions(loadedQuestions)
             latestQuestionId = questions.map(\.id).min() ?? Self.maxQuestionId
             hasMoreQuestions = questions.count == Self.batchSize
             lastFeedLoadedAt = Date()
@@ -216,12 +216,10 @@ final class ProfileQuestionsSectionViewModel {
         }
     }
 
-    private func loadNextBatch() async {
+    func loadNextBatch() async {
         guard state == .content, hasMoreQuestions else { return }
 
         state = .loadingNextBatch
-
-//        try? await Task.sleep(nanoseconds: 5_000_000_000) // TODO: Delete later
 
         let result = await questionService.getQuestionsFeed(
             for: userNick,
@@ -232,9 +230,10 @@ final class ProfileQuestionsSectionViewModel {
 
         switch result {
         case .success(let loadedQuestions):
-            questions.append(contentsOf: loadedQuestions)
+            questions.append(contentsOf: QuestionAnswerPreview.limitedQuestions(loadedQuestions))
             latestQuestionId = loadedQuestions.map(\.id).min() ?? Self.maxQuestionId
             hasMoreQuestions = loadedQuestions.count == Self.batchSize
+            lastFeedLoadedAt = Date()
             state = .content
         case .failure:
             state = .content
@@ -242,12 +241,73 @@ final class ProfileQuestionsSectionViewModel {
         }
     }
 
-    private func toggleAnswerLike(answerId: Int) async {
-        guard
-            !likingAnswerIds.contains(answerId)
+    func refreshAnsweredQuestion(questionId: Int) async {
+        guard questions.contains(where: { $0.id == questionId }) else { return }
+
+        let result = await questionService.getQuestionDetails(
+            questionId: questionId,
+            batchSize: Self.batchSize
+        )
+
+        switch result {
+        case .success(let updatedQuestion):
+            replaceQuestion(updatedQuestion)
+        case .failure:
+            applyAnswerPublished(questionId: questionId)
+        }
+    }
+}
+
+// MARK: - Question Actions
+
+private extension ProfileQuestionsSectionViewModel {
+
+    func requestQuestionDeletion(questionId: Int) {
+        guard !isDeleteConfirmationPresented,
+              !deletingQuestionIds.contains(questionId),
+              let question = questions.first(where: { $0.id == questionId }),
+              question.isOwnedByCurrentUser
         else {
             return
         }
+
+        questionPendingDeletion = question
+        isDeleteConfirmationPresented = true
+    }
+
+    func confirmQuestionDeletion() async {
+        guard let question = questionPendingDeletion,
+              !deletingQuestionIds.contains(question.id)
+        else {
+            return
+        }
+
+        isDeleteConfirmationPresented = false
+        questionPendingDeletion = nil
+        deletingQuestionIds.insert(question.id)
+        defer { deletingQuestionIds.remove(question.id) }
+
+        let result = await questionService.deleteQuestion(
+            questionId: question.id,
+            authorId: question.authorId
+        )
+
+        switch result {
+        case .success:
+            removeQuestion(questionId: question.id)
+            notifyQuestionDeleted(question: question)
+        case .failure:
+            showToast(.deleteQuestionFailed)
+        }
+    }
+}
+
+// MARK: - Answer Actions
+
+private extension ProfileQuestionsSectionViewModel {
+
+    func toggleAnswerLike(answerId: Int) async {
+        guard !likingAnswerIds.contains(answerId) else { return }
 
         var updatedQuestions = questions
         guard let indexes = answerIndexes(answerId: answerId, in: updatedQuestions) else { return }
@@ -288,12 +348,11 @@ final class ProfileQuestionsSectionViewModel {
         }
     }
 
-    private func toggleBestAnswer(questionId: Int, answerId: Int) async {
-        guard
-            !updatingBestAnswerIds.contains(answerId),
-            let question = questions.first(where: { $0.id == questionId }),
-            question.isOwnedByCurrentUser,
-            let answerIndex = question.answers.firstIndex(where: { $0.id == answerId })
+    func toggleBestAnswer(questionId: Int, answerId: Int) async {
+        guard !updatingBestAnswerIds.contains(answerId),
+              let question = questions.first(where: { $0.id == questionId }),
+              question.isOwnedByCurrentUser,
+              let answerIndex = question.answers.firstIndex(where: { $0.id == answerId })
         else {
             return
         }
@@ -328,7 +387,83 @@ final class ProfileQuestionsSectionViewModel {
         }
     }
 
-    private func applyBestAnswer(
+    func requestAnswerDeletion(answerId: Int) {
+        guard !isAnswerDeleteConfirmationPresented,
+              !deletingAnswerIds.contains(answerId),
+              let answer = answer(answerId: answerId),
+              answer.isOwnedByCurrentUser
+        else {
+            return
+        }
+
+        answerPendingDeletion = answer
+        isAnswerDeleteConfirmationPresented = true
+    }
+
+    func confirmAnswerDeletion() async {
+        guard let answer = answerPendingDeletion,
+              !deletingAnswerIds.contains(answer.id)
+        else {
+            return
+        }
+
+        isAnswerDeleteConfirmationPresented = false
+        answerPendingDeletion = nil
+        deletingAnswerIds.insert(answer.id)
+        defer { deletingAnswerIds.remove(answer.id) }
+
+        let result = await answerService.deleteAnswer(answerId: answer.id)
+
+        switch result {
+        case .success:
+            removeAnswer(answerId: answer.id)
+            notifyAnswerDeleted(answerId: answer.id)
+        case .failure:
+            showToast(.deleteAnswerFailed)
+        }
+    }
+}
+
+// MARK: - State Mutations
+
+private extension ProfileQuestionsSectionViewModel {
+
+    func removeQuestion(questionId: Int) {
+        questions.removeAll { $0.id == questionId }
+        state = questions.isEmpty ? .empty : .content
+    }
+
+    func removeAnswer(answerId: Int) {
+        var updatedQuestions = questions
+
+        for questionIndex in updatedQuestions.indices {
+            let originalCount = updatedQuestions[questionIndex].answers.count
+            updatedQuestions[questionIndex].answers.removeAll { $0.id == answerId }
+
+            if updatedQuestions[questionIndex].answers.count != originalCount {
+                updatedQuestions[questionIndex].answersCount = max(
+                    0,
+                    updatedQuestions[questionIndex].answersCount - 1
+                )
+            }
+        }
+
+        questions = updatedQuestions
+    }
+
+    func applyAnswerPublished(questionId: Int) {
+        guard let questionIndex = questions.firstIndex(where: { $0.id == questionId }) else { return }
+
+        questions[questionIndex].answersCount += 1
+    }
+
+    func replaceQuestion(_ updatedQuestion: Question) {
+        guard let questionIndex = questions.firstIndex(where: { $0.id == updatedQuestion.id }) else { return }
+
+        questions[questionIndex] = QuestionAnswerPreview.limitedQuestion(updatedQuestion)
+    }
+
+    func applyBestAnswer(
         questionId: Int,
         answerId: Int,
         isBest: Bool
@@ -350,7 +485,7 @@ final class ProfileQuestionsSectionViewModel {
         questions = updatedQuestions
     }
 
-    private func applyAnswerLikeChanged(answerId: Int, isLiked: Bool, likesCount: Int) {
+    func applyAnswerLikeChanged(answerId: Int, isLiked: Bool, likesCount: Int) {
         var updatedQuestions = questions
         guard let indexes = answerIndexes(answerId: answerId, in: updatedQuestions) else { return }
 
@@ -358,161 +493,19 @@ final class ProfileQuestionsSectionViewModel {
         updatedQuestions[indexes.question].answers[indexes.answer].likesCount = likesCount
         questions = updatedQuestions
     }
+}
 
-    private func requestAnswerDeletion(answerId: Int) {
-        guard
-            !isAnswerDeleteConfirmationPresented,
-            !deletingAnswerIds.contains(answerId),
-            let answer = answer(answerId: answerId),
-            answer.isOwnedByCurrentUser
-        else {
-            return
-        }
+// MARK: - Search
 
-        answerPendingDeletion = answer
-        isAnswerDeleteConfirmationPresented = true
-    }
+private extension ProfileQuestionsSectionViewModel {
 
-    private func confirmAnswerDeletion() async {
-        guard
-            let answer = answerPendingDeletion,
-            !deletingAnswerIds.contains(answer.id)
-        else {
-            return
-        }
-
-        isAnswerDeleteConfirmationPresented = false
-        answerPendingDeletion = nil
-        deletingAnswerIds.insert(answer.id)
-        defer { deletingAnswerIds.remove(answer.id) }
-
-        let result = await answerService.deleteAnswer(answerId: answer.id)
-
-        switch result {
-        case .success:
-            removeAnswer(answerId: answer.id)
-            NotificationCenter.default.post(
-                name: .answerDeleted,
-                object: nil,
-                userInfo: [
-                    AnswerDeletionNotification.answerIdKey: answer.id
-                ]
-            )
-        case .failure:
-            showToast(.deleteAnswerFailed)
-        }
-    }
-
-    private func requestQuestionDeletion(questionId: Int) {
-        guard
-            !isDeleteConfirmationPresented,
-            !deletingQuestionIds.contains(questionId),
-            let question = questions.first(where: { $0.id == questionId }),
-            question.isOwnedByCurrentUser
-        else {
-            return
-        }
-
-        questionPendingDeletion = question
-        isDeleteConfirmationPresented = true
-    }
-
-    private func confirmQuestionDeletion() async {
-        guard
-            let question = questionPendingDeletion,
-            !deletingQuestionIds.contains(question.id)
-        else {
-            return
-        }
-
-        isDeleteConfirmationPresented = false
-        questionPendingDeletion = nil
-        deletingQuestionIds.insert(question.id)
-        defer { deletingQuestionIds.remove(question.id) }
-
-        let result = await questionService.deleteQuestion(
-            questionId: question.id,
-            authorId: question.authorId
-        )
-
-        switch result {
-        case .success:
-            removeQuestion(questionId: question.id)
-            NotificationCenter.default.post(
-                name: .questionDeleted,
-                object: nil,
-                userInfo: [
-                    QuestionDeletionNotification.questionIdKey: question.id,
-                    QuestionDeletionNotification.authorNickKey: question.authorNick
-                ]
-            )
-        case .failure:
-            showToast(.deleteQuestionFailed)
-        }
-    }
-
-    private func removeQuestion(questionId: Int) {
-        questions.removeAll { $0.id == questionId }
-        state = questions.isEmpty ? .empty : .content
-    }
-
-    private func removeAnswer(answerId: Int) {
-        var updatedQuestions = questions
-
-        for questionIndex in updatedQuestions.indices {
-            let originalCount = updatedQuestions[questionIndex].answers.count
-            updatedQuestions[questionIndex].answers.removeAll { $0.id == answerId }
-
-            if updatedQuestions[questionIndex].answers.count != originalCount {
-                updatedQuestions[questionIndex].answersCount = max(
-                    0,
-                    updatedQuestions[questionIndex].answersCount - 1
-                )
-            }
-        }
-
-        questions = updatedQuestions
-    }
-
-    private func applyAnswerPublished(questionId: Int) {
-        guard let questionIndex = questions.firstIndex(where: { $0.id == questionId }) else { return }
-
-        questions[questionIndex].answersCount += 1
-    }
-
-    private func refreshAnsweredQuestion(questionId: Int) async {
-        guard questions.contains(where: { $0.id == questionId }) else { return }
-
-        let result = await questionService.getQuestionDetails(
-            questionId: questionId,
-            batchSize: Self.batchSize
-        )
-
-        switch result {
-        case .success(let updatedQuestion):
-            replaceQuestion(updatedQuestion)
-        case .failure:
-            applyAnswerPublished(questionId: questionId)
-        }
-    }
-
-    private func replaceQuestion(_ updatedQuestion: Question) {
-        guard let questionIndex = questions.firstIndex(where: { $0.id == updatedQuestion.id }) else { return }
-
-        questions[questionIndex] = updatedQuestion
-    }
-
-    private func answer(answerId: Int) -> Answer? {
+    func answer(answerId: Int) -> Answer? {
         questions.lazy
             .flatMap(\.answers)
             .first { $0.id == answerId }
     }
 
-    private func answerIndexes(answerId: Int) -> (question: Int, answer: Int)? {
-        answerIndexes(answerId: answerId, in: questions)
-    }
-
-    private func answerIndexes(answerId: Int, in questions: [Question]) -> (question: Int, answer: Int)? {
+    func answerIndexes(answerId: Int, in questions: [Question]) -> (question: Int, answer: Int)? {
         for questionIndex in questions.indices {
             guard let answerIndex = questions[questionIndex].answers.firstIndex(where: { $0.id == answerId }) else {
                 continue
@@ -522,12 +515,117 @@ final class ProfileQuestionsSectionViewModel {
 
         return nil
     }
+}
 
-    private func showToast(_ message: ToastMessage) {
-        toast = message.item
+// MARK: - Notifications
+
+private extension ProfileQuestionsSectionViewModel {
+
+    func observeNotifications() {
+        NotificationCenter.default
+            .publisher(for: .questionDeleted)
+            .sink { [weak self] notification in
+                Task { @MainActor in
+                    self?.handleQuestionDeletedNotification(notification)
+                }
+            }
+            .store(in: &notificationCancellables)
+
+        NotificationCenter.default
+            .publisher(for: .answerDeleted)
+            .sink { [weak self] notification in
+                Task { @MainActor in
+                    self?.handleAnswerDeletedNotification(notification)
+                }
+            }
+            .store(in: &notificationCancellables)
+
+        NotificationCenter.default
+            .publisher(for: .answerPublished)
+            .sink { [weak self] notification in
+                Task { @MainActor in
+                    self?.handleAnswerPublishedNotification(notification)
+                }
+            }
+            .store(in: &notificationCancellables)
+
+        NotificationCenter.default
+            .publisher(for: .answerLikeChanged)
+            .sink { [weak self] notification in
+                Task { @MainActor in
+                    self?.handleAnswerLikeChangedNotification(notification)
+                }
+            }
+            .store(in: &notificationCancellables)
     }
 
-    private func notifyBestAnswerChanged(
+    func handleQuestionDeletedNotification(_ notification: Notification) {
+        guard let questionId = notification.userInfo?[QuestionDeletionNotification.questionIdKey] as? Int else {
+            return
+        }
+
+        removeQuestion(questionId: questionId)
+    }
+
+    func handleAnswerDeletedNotification(_ notification: Notification) {
+        guard let answerId = notification.userInfo?[AnswerDeletionNotification.answerIdKey] as? Int else {
+            return
+        }
+
+        removeAnswer(answerId: answerId)
+    }
+
+    func handleAnswerPublishedNotification(_ notification: Notification) {
+        guard let questionId = notification.userInfo?[AnswerPublishedNotification.questionIdKey] as? Int else {
+            return
+        }
+
+        Task { await refreshAnsweredQuestion(questionId: questionId) }
+    }
+
+    func handleAnswerLikeChangedNotification(_ notification: Notification) {
+        guard let answerId = notification.userInfo?[AnswerLikeNotification.answerIdKey] as? Int,
+              let isLiked = notification.userInfo?[AnswerLikeNotification.isLikedKey] as? Bool,
+              let likesCount = notification.userInfo?[AnswerLikeNotification.likesCountKey] as? Int
+        else {
+            return
+        }
+
+        applyAnswerLikeChanged(answerId: answerId, isLiked: isLiked, likesCount: likesCount)
+    }
+
+    func notifyQuestionDeleted(question: Question) {
+        NotificationCenter.default.post(
+            name: .questionDeleted,
+            object: nil,
+            userInfo: [
+                QuestionDeletionNotification.questionIdKey: question.id,
+                QuestionDeletionNotification.authorNickKey: question.authorNick
+            ]
+        )
+    }
+
+    func notifyAnswerDeleted(answerId: Int) {
+        NotificationCenter.default.post(
+            name: .answerDeleted,
+            object: nil,
+            userInfo: [
+                AnswerDeletionNotification.answerIdKey: answerId
+            ]
+        )
+    }
+
+    func notifyAnswerPublished(questionId: Int) {
+        NotificationCenter.default.post(
+            name: .answerPublished,
+            object: nil,
+            userInfo: [
+                AnswerPublishedNotification.questionIdKey: questionId
+            ]
+        )
+    }
+
+    func notifyBestAnswerChanged(
         questionId: Int,
         answerId: Int,
         isBest: Bool
@@ -543,7 +641,7 @@ final class ProfileQuestionsSectionViewModel {
         )
     }
 
-    private func notifyAnswerLikeChanged(answerId: Int) {
+    func notifyAnswerLikeChanged(answerId: Int) {
         guard let answer = answer(answerId: answerId) else { return }
 
         NotificationCenter.default.post(
@@ -555,5 +653,14 @@ final class ProfileQuestionsSectionViewModel {
                 AnswerLikeNotification.likesCountKey: answer.likesCount
             ]
         )
+    }
+}
+
+// MARK: - Toast
+
+private extension ProfileQuestionsSectionViewModel {
+
+    func showToast(_ message: ToastMessage) {
+        toast = message.item
     }
 }

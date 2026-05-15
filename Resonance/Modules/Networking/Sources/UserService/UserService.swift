@@ -2,14 +2,14 @@ import Foundation
 import Core
 
 public final class UserService {
-    
+
     private let networkingManager: NetworkingManager
 
     public init() {
         self.networkingManager = NetworkingManager()
     }
-    
-    public func verifyNick(_ nick: String) async -> NetworkingResult<Void> {
+
+    public func checkNickExistence(_ nick: String) async -> NetworkingResult<Void> {
         do {
             let body = ["Nick": nick]
             let bodyData = try JSONEncoder().encode(body)
@@ -17,6 +17,7 @@ public final class UserService {
             let response: UserNickVerifyResponseDTO = try await networkingManager.request(
                 endpoint: "/verify/existence/nick",
                 method: .post,
+                authorization: .other,
                 body: bodyData
             )
 
@@ -131,7 +132,6 @@ public final class UserService {
             let bodyData = try JSONSerialization.data(withJSONObject: body, options: [])
 
             let endpoint = isSubscribed ? "/follow/no" : "/follow/yes"
-
             let response: UserSubscribeResponseDTO = try await networkingManager.request(
                 endpoint: endpoint,
                 method: .post,
@@ -198,6 +198,63 @@ public final class UserService {
 
             let response: UserAvatarChangeResponseDTO = try await networkingManager.request(
                 endpoint: "/user/change/ava",
+                method: .post,
+                authorization: .bearer,
+                body: bodyData
+            )
+
+            switch response.compCode {
+            case 0:
+                return .success(())
+            default:
+                let error = BusinessError(compCode: response.compCode)
+                return .failure(.business(error))
+            }
+        } catch {
+            return .networkFailure(from: error)
+        }
+    }
+
+    public func changeNick(newNick: String) async -> NetworkingResult<Void> {
+        do {
+            guard let currentUserId = await TokenManager.shared.userId else {
+                return .failure(.business(BusinessError(compCode: -1)))
+            }
+            let body: [String: Any] = [
+                "UserId": currentUserId,
+                "Nick": newNick
+            ]
+            let bodyData = try JSONSerialization.data(withJSONObject: body, options: [])
+
+            let response: UserNickChangeResponseDTO = try await networkingManager.request(
+                endpoint: "/user/change/nick",
+                method: .post,
+                authorization: .bearer,
+                body: bodyData
+            )
+
+            switch response.compCode {
+            case 0:
+                return .success(())
+            default:
+                let error = BusinessError(compCode: response.compCode)
+                return .failure(.business(error))
+            }
+        } catch {
+            return .networkFailure(from: error)
+        }
+    }
+
+    public func deleteAccount() async -> NetworkingResult<Void> {
+        do {
+            guard let currentUserId = await TokenManager.shared.userId else {
+                return .failure(.business(BusinessError(compCode: -1)))
+            }
+            let body = [ "UserId": currentUserId]
+            let bodyData = try JSONSerialization.data(withJSONObject: body, options: [])
+
+            let response: UserDeleteResponseDTO = try await networkingManager.request(
+                endpoint: "/user/delete",
                 method: .post,
                 authorization: .bearer,
                 body: bodyData

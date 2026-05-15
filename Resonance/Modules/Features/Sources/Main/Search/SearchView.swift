@@ -102,6 +102,7 @@ struct SearchView: View {
                         viewModel.handle(.openUserProfile(userNick: profile.nick))
                     }
                 )
+                .listSectionSeparator(.hidden)
                 .listRowBackground(Color.clear)
                 .listRowInsets(.all, 0)
                 .onAppear {

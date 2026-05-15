@@ -8,35 +8,27 @@ public final class AuthService {
     public init() {
         self.networkingManager = NetworkingManager()
     }
-    
-    public func signin(with email: String) async throws -> SigninResponse {
-        let body = ["Email": email]
-        let bodyData = try JSONEncoder().encode(body)
-        
-        return try await networkingManager.request(
-            endpoint: "/user/signin/request",
-            method: .post,
-            body: bodyData
-        )
-    }
-    
-    public func signinConfirm(
-        code: String,
-        for email: String
-    ) async -> NetworkingResult<SigninConfirmCodeResponse> {
-        do {
-            let body = ["Email": email, "VCode": code]
-            let bodyData = try JSONEncoder().encode(body)
 
-            let response: SigninConfirmCodeResponseDTO = try await networkingManager.request(
-                endpoint: "/user/signin/confirm",
+    // MARK: - Authorize With Email
+
+    public func signup(with email: String) async -> NetworkingResult<SignupWithEmailResponse> {
+        do {
+            let body = ["Email": email]
+            let bodyData = try JSONSerialization.data(withJSONObject: body, options: [])
+
+            let response: SignupWithEmailResponseDTO = try await networkingManager.request(
+                endpoint: "/user/signup/request",
                 method: .post,
+                authorization: .other,
                 body: bodyData
             )
 
             switch response.compCode {
             case 0:
-                let result = response.toDomain()
+                guard let accessToken = response.accessToken else {
+                    throw NSError(domain: "Unexpected response", code: 0, userInfo: nil)
+                }
+                let result = response.toDomain(accessToken: accessToken)
                 return .success(result)
             default:
                 let error = BusinessError(compCode: response.compCode)
@@ -46,18 +38,34 @@ public final class AuthService {
             return .networkFailure(from: error)
         }
     }
-    
-    public func signup(with email: String) async throws -> SignupResponse {
-        let body = ["Email": email]
-        let bodyData = try JSONEncoder().encode(body)
-        
-        return try await networkingManager.request(
-            endpoint: "/user/signup/request",
-            method: .post,
-            body: bodyData
-        )
+
+    public func signin(with email: String) async -> NetworkingResult<Void> {
+        do {
+            let body = ["Email": email]
+            let bodyData = try JSONSerialization.data(withJSONObject: body, options: [])
+
+            let response: SigninWithEmailResponseDTO = try await networkingManager.request(
+                endpoint: "/user/signin/request",
+                method: .post,
+                authorization: .other,
+                body: bodyData
+            )
+
+            switch response.compCode {
+            case 0:
+//                let result = response.toDomain()
+                return .success(())
+            default:
+                let error = BusinessError(compCode: response.compCode)
+                return .failure(.business(error))
+            }
+        } catch {
+            return .networkFailure(from: error)
+        }
     }
-    
+
+    // MARK: - Confirm Code
+
     public func signupConfirm(
         code: String,
         for email: String,
@@ -70,13 +78,19 @@ public final class AuthService {
             let response: SignupConfirmCodeResponseDTO = try await networkingManager.request(
                 endpoint: "/user/signup/confirm",
                 method: .post,
+                authorization: .other,
                 headers: ["Authorization": "Bearer \(accessToken)"],
                 body: bodyData
             )
 
             switch response.compCode {
             case 0:
-                let result = response.toDomain()
+                guard let accessToken = response.accessToken,
+                      let refreshToken = response.refreshToken
+                else {
+                    throw NSError(domain: "Unexpected response", code: 0, userInfo: nil)
+                }
+                let result = response.toDomain(accessToken: accessToken, refreshToken: refreshToken)
                 return .success(result)
             default:
                 let error = BusinessError(compCode: response.compCode)
@@ -86,11 +100,52 @@ public final class AuthService {
             return .networkFailure(from: error)
         }
     }
-    
-    public func signupCommit(
+
+
+    public func signinConfirm(
+        code: String,
+        for email: String
+    ) async -> NetworkingResult<SigninConfirmCodeResponse> {
+        do {
+            let body = ["Email": email, "VCode": code]
+            let bodyData = try JSONEncoder().encode(body)
+
+            let response: SigninConfirmCodeResponseDTO = try await networkingManager.request(
+                endpoint: "/user/signin/confirm",
+                method: .post,
+                authorization: .other,
+                body: bodyData
+            )
+
+            switch response.compCode {
+            case 0:
+                guard let user = response.user,
+                      let accessToken = response.accessToken,
+                      let refreshToken = response.refreshToken
+                else {
+                    throw NSError(domain: "Unexpected response", code: 0, userInfo: nil)
+                }
+                let result = response.toDomain(
+                    user: user,
+                    accessToken: accessToken,
+                    refreshToken: refreshToken
+                )
+                return .success(result)
+            default:
+                let error = BusinessError(compCode: response.compCode)
+                return .failure(.business(error))
+            }
+        } catch {
+            return .networkFailure(from: error)
+        }
+    }
+
+    // MARK: - Create Account
+
+    public func createAccount(
         email: String,
         nick: String,
-        withToken accessToken: String
+        accessToken: String
     ) async -> NetworkingResult<SignupCommitResponse> {
         do {
             let body = ["Email": email, "Nick": nick]
@@ -99,15 +154,15 @@ public final class AuthService {
             let response: SignupCommitResponseDTO = try await networkingManager.request(
                 endpoint: "/user/signup/commit",
                 method: .post,
+                authorization: .other,
                 headers: ["Authorization": "Bearer \(accessToken)"],
                 body: bodyData
             )
 
             switch response.compCode {
             case 0:
-                guard
-                    let accessToken = response.accessToken,
-                    let refreshToken = response.refreshToken
+                guard let accessToken = response.accessToken,
+                      let refreshToken = response.refreshToken
                 else {
                     throw NSError(domain: "Unexpected response", code: 0, userInfo: nil)
                 }

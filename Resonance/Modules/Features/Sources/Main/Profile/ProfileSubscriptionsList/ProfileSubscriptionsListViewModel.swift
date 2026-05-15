@@ -120,6 +120,7 @@ final class ProfileSubscriptionsListViewModel {
             subscriptions.append(contentsOf: loadedSubscriptions)
             latestUserId = loadedSubscriptions.map(\.id).min() ?? latestUserId
             hasMoreSubscriptions = loadedSubscriptions.count == Self.batchSize
+            lastFeedLoadedAt = Date()
             state = .content
         case .failure:
             state = .content

@@ -1,17 +1,20 @@
 import SwiftUI
 import Core
 import Networking
+import Combine
 
 @MainActor
 @Observable
 final class PostDetailedViewModel {
+
+    // MARK: - Internal Types
 
     enum Intent {
         case requestPostDeletion
         case cancelPostDeletion
         case confirmPostDeletion
         case toggleLike
-        case postLikeChanged(postId: Int, isLiked: Bool, likesCount: Int)
+        case reportSent
         case dismissToast
     }
 
@@ -20,14 +23,20 @@ final class PostDetailedViewModel {
         case deleting
     }
 
-    private(set) var state: State = .content
+    // MARK: - Properties
+
     private(set) var toast: ToastItem?
+    private(set) var state: State = .content
+    private(set) var post: Post
     private(set) var isDeleteConfirmationPresented = false
     private(set) var shouldDismiss = false
-    private(set) var post: Post
     private(set) var isLikeLoading = false
 
+    private var postLikeChangedCancellable: AnyCancellable?
+
     private let postService: PostService
+
+    // MARK: - Internal Init
 
     init(
         post: Post,
@@ -35,7 +44,10 @@ final class PostDetailedViewModel {
     ) {
         self.post = post
         self.postService = postService
+        observeNotifications()
     }
+
+    // MARK: - Internal Methods
 
     func handle(_ intent: Intent) {
         switch intent {
@@ -48,12 +60,14 @@ final class PostDetailedViewModel {
             Task { await confirmPostDeletion() }
         case .toggleLike:
             Task { await toggleLike() }
-        case .postLikeChanged(let postId, let isLiked, let likesCount):
-            applyPostLikeChanged(postId: postId, isLiked: isLiked, likesCount: likesCount)
+        case .reportSent:
+            toast = ToastMessage.reportSent.item
         case .dismissToast:
             toast = nil
         }
     }
+
+    // MARK: - Private Methods
 
     private func confirmPostDeletion() async {
         guard state != .deleting else { return }
@@ -65,6 +79,7 @@ final class PostDetailedViewModel {
 
         switch result {
         case .success:
+            notifyPostDeleted()
             shouldDismiss = true
         case .failure:
             state = .content
@@ -106,6 +121,26 @@ final class PostDetailedViewModel {
         post.likesCount = likesCount
     }
 
+    private func observeNotifications() {
+        postLikeChangedCancellable = NotificationCenter.default
+            .publisher(for: .postLikeChanged)
+            .sink { [weak self] notification in
+                Task { @MainActor in
+                    self?.handlePostLikeChangedNotification(notification)
+                }
+            }
+    }
+
+    private func notifyPostDeleted() {
+        NotificationCenter.default.post(
+            name: .profilePostDeleted,
+            object: nil,
+            userInfo: [
+                ProfilePostDeletionNotification.authorNickKey: post.authorNick
+            ]
+        )
+    }
+
     private func notifyPostLikeChanged() {
         NotificationCenter.default.post(
             name: .postLikeChanged,
@@ -116,5 +151,16 @@ final class PostDetailedViewModel {
                 PostLikeNotification.likesCountKey: post.likesCount
             ]
         )
+    }
+
+    private func handlePostLikeChangedNotification(_ notification: Notification) {
+        guard let postId = notification.userInfo?[PostLikeNotification.postIdKey] as? Int,
+              let isLiked = notification.userInfo?[PostLikeNotification.isLikedKey] as? Bool,
+              let likesCount = notification.userInfo?[PostLikeNotification.likesCountKey] as? Int
+        else {
+            return
+        }
+
+        applyPostLikeChanged(postId: postId, isLiked: isLiked, likesCount: likesCount)
     }
 }

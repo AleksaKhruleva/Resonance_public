@@ -36,23 +36,6 @@ struct ProfilePostsSectionView: View {
             .onAppear {
                 viewModel.handle(.loadFeed)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .postLikeChanged)) { notification in
-                guard
-                    let postId = notification.userInfo?[PostLikeNotification.postIdKey] as? Int,
-                    let isLiked = notification.userInfo?[PostLikeNotification.isLikedKey] as? Bool,
-                    let likesCount = notification.userInfo?[PostLikeNotification.likesCountKey] as? Int
-                else {
-                    return
-                }
-
-                viewModel.handle(
-                    .postLikeChanged(
-                        postId: postId,
-                        isLiked: isLiked,
-                        likesCount: likesCount
-                    )
-                )
-            }
     }
 
     @ViewBuilder
@@ -72,10 +55,10 @@ struct ProfilePostsSectionView: View {
                     viewModel.handle(.loadFeed)
                 }
             )
-                .frame(maxWidth: .infinity, minHeight: minHeight)
+            .frame(maxWidth: .infinity, minHeight: minHeight)
         }
     }
-
+    
     @ViewBuilder
     private var gridContent: some View {
         VStack(spacing: 0) {
